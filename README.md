@@ -1,0 +1,47 @@
+# polybot
+
+Prediction-market consensus copy-trading research bot. It monitors profitable
+Polymarket traders via public read-only APIs, detects markets where many of
+them agree, scores that consensus, and paper-trades the signals so the
+strategy can be evaluated statistically before real money is ever considered.
+
+## Read-only, no trading, legal note
+
+This project is **read-only**. It never places, signs, or cancels orders, and
+never handles wallet private keys, seed phrases, or exchange credentials. The
+operator is in the Netherlands, where the Kansspelautoriteit has ruled
+Polymarket an unlicensed game of chance and participation is blocked. This
+codebase never bypasses geo-blocking (no VPN/proxy rotation, no header
+spoofing). It only reads public market data.
+
+## Quickstart
+
+```bash
+uv sync
+cp .env.example .env   # fill in real values, never commit .env
+docker compose up -d
+uv run alembic upgrade head
+uv run python scripts/verify_setup.py
+```
+
+## Folders
+
+| Folder               | Purpose                                                |
+|-----------------------|---------------------------------------------------------|
+| `app/config`          | Settings (env vars read here, nowhere else)             |
+| `app/db`              | SQLAlchemy engine, session, models                       |
+| `app/collectors`      | Public API clients and data collectors                   |
+| `app/consensus`       | Consensus scoring across traders (phase 3)               |
+| `app/signals`         | Signal generation from scored consensus (phase 3)        |
+| `app/paper`           | Paper-trading engine (phase 4)                           |
+| `app/risk`            | Risk and position-sizing rules (phase 5)                 |
+| `app/execution`       | Real order execution, gated off (phase 6)                |
+| `app/notifications`   | Alerting (phase 7)                                       |
+| `app/dashboard`       | Monitoring dashboard (phase 8)                           |
+| `app/scheduler`       | Scheduled jobs                                           |
+| `app/utils`           | Shared helpers                                           |
+| `alembic/`            | Database migrations                                      |
+| `scripts/`            | Operational scripts (e.g. `verify_setup.py`)             |
+| `tests/`              | Test suite                                               |
+| `docker/`             | Docker Compose infrastructure (Postgres, Redis)          |
+| `docs/`               | Project documentation                                    |

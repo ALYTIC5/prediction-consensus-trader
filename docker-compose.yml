@@ -1,0 +1,54 @@
+# Compose reads the same .env file the app reads (via pydantic-settings),
+# so Postgres/Redis credentials have exactly one source of truth. Never
+# hardcode values here — edit .env instead.
+#
+# Commands:
+#   docker compose up -d      start postgres, redis, adminer in background
+#   docker compose down       stop and remove containers (volumes kept)
+#   docker compose logs -f    follow logs from all services
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: polybot-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-polybot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-polybot}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polybot} -d ${POSTGRES_DB:-polybot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    container_name: polybot-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  adminer:
+    image: adminer:latest
+    container_name: polybot-adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
+  redisdata:

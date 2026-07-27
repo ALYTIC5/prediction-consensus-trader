@@ -1,0 +1,14 @@
+# Secrets — NEVER commit this file. Real credentials live only in .env.
+.env
+
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.vscode/
+.idea/
+.DS_Store
