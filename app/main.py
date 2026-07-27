@@ -11,6 +11,7 @@ from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
 from app.scheduler.runner import PeriodicJob, run_jobs
+from app.signals.generator import generate as generate_signals
 from app.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,11 @@ async def _run() -> None:
                 name="markets",
                 run=lambda: collect_markets(client, settings),
                 interval_seconds=settings.markets_interval_seconds,
+            ),
+            PeriodicJob(
+                name="consensus",
+                run=lambda: generate_signals(settings),
+                interval_seconds=settings.consensus_interval_seconds,
             ),
         ]
         await run_jobs(jobs, stop_event)

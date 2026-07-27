@@ -57,6 +57,9 @@ tests/ - docker/ - docs/
 - Logging via the stdlib logging module, logger = logging.getLogger(__name__).
   Never print() outside scripts/.
 - Line length 100. Run ruff check and ruff format before saying a task is done.
+- Every signal must be explainable from its own database row.
+- Every rejected candidate is accounted for in the funnel log with a reason.
+- Thresholds live in settings only - a hardcoded threshold is a bug.
 
 ## Working agreement
 

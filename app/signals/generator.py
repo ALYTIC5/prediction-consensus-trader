@@ -1,0 +1,382 @@
+"""Signal generation: DB in, consensus engine, signals out.
+
+Orchestration layer over app/consensus/engine.py - this module does the
+loading, grouping, and persisting; the engine does the pure evaluation. See
+docs/PHASE3_DESIGN.md section 4.
+"""
+
+import asyncio
+import logging
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.orm import Session
+
+from app.config.settings import Settings
+from app.consensus.engine import (
+    CandidateGroup,
+    ConsensusConfig,
+    ContributorEvent,
+    MarketState,
+    Rejection,
+    RejectionReason,
+    SignalDraft,
+    evaluate_group,
+)
+from app.db.models import (
+    Market,
+    PositionHistory,
+    PriceSnapshot,
+    Signal,
+    SignalStatus,
+    TraderScore,
+    Wallet,
+)
+from app.db.session import db_session
+
+logger = logging.getLogger(__name__)
+
+_FUNNEL_ORDER = [
+    RejectionReason.MARKET_KNOWN,
+    RejectionReason.MARKET_OPEN,
+    RejectionReason.LIQUIDITY,
+    RejectionReason.PRICE_BAND,
+    RejectionReason.SPREAD,
+    RejectionReason.BREADTH,
+    RejectionReason.QUALITY,
+    RejectionReason.CONVICTION,
+]
+
+
+@dataclass(frozen=True)
+class _CycleResult:
+    expired_count: int
+    funnel_line: str
+    new_signal_lines: list[str]
+
+
+async def generate(settings: Settings) -> None:
+    """Run one full signal-generation cycle: expire, evaluate, persist, log."""
+    now = datetime.now(UTC)
+    result = await asyncio.to_thread(_run_cycle, settings, now)
+
+    if result.expired_count:
+        logger.info("signals: expired %d signals", result.expired_count)
+    logger.info(result.funnel_line)
+    for line in result.new_signal_lines:
+        logger.info(line)
+
+
+def _run_cycle(settings: Settings, now: datetime) -> _CycleResult:
+    config = ConsensusConfig.from_settings(settings)
+
+    with db_session() as session:
+        expired_count = _expire_signals(session, now)
+
+        events = _load_events(session, config, now)
+        wallet_ids = {event.wallet_id for event in events}
+        condition_ids = {event.condition_id for event in events}
+        assets = {event.asset for event in events}
+
+        wallets = _load_wallets(session, wallet_ids)
+        scores = _latest_scores_by_wallet(session, wallet_ids)
+        markets = _load_markets(session, condition_ids)
+        prices = _latest_prices_by_asset(session, assets)
+
+        groups = _build_groups(events, wallets, scores, markets)
+
+        results: list[SignalDraft | Rejection] = []
+        new_lines: list[str] = []
+        new_count = 0
+        reinforced_count = 0
+
+        for group in groups:
+            market = markets.get(group.condition_id)
+            current_price = prices.get(group.asset)
+            market_state = _market_state(market, current_price)
+            result = evaluate_group(group, market_state, config, now)
+            results.append(result)
+
+            if isinstance(result, SignalDraft):
+                kind = _apply_draft(session, result, now, settings)
+                if kind == "new":
+                    new_count += 1
+                    new_lines.append(_format_new_signal_line(result, market))
+                else:
+                    reinforced_count += 1
+
+        funnel_line = _build_funnel_line(
+            len(events), len(groups), results, new_count, reinforced_count
+        )
+
+    return _CycleResult(
+        expired_count=expired_count, funnel_line=funnel_line, new_signal_lines=new_lines
+    )
+
+
+def _expire_signals(session: Session, now: datetime) -> int:
+    """TTL passed, or the signal's market has since closed."""
+    closed_condition_ids = select(Market.condition_id).where(Market.closed.is_(True))
+    result = session.execute(
+        update(Signal)
+        .where(Signal.status == SignalStatus.ACTIVE)
+        .where(or_(Signal.expires_at <= now, Signal.condition_id.in_(closed_condition_ids)))
+        .values(status=SignalStatus.EXPIRED)
+    )
+    return result.rowcount
+
+
+def _load_events(session: Session, config: ConsensusConfig, now: datetime) -> list[PositionHistory]:
+    """Fresh, non-bootstrap OPENED (+ INCREASED, if configured) events."""
+    event_types = ["OPENED"]
+    if config.consensus_include_increases:
+        event_types.append("INCREASED")
+    freshness_start = now - timedelta(hours=config.consensus_freshness_hours)
+
+    rows = session.execute(
+        select(PositionHistory).where(
+            PositionHistory.event_type.in_(event_types),
+            PositionHistory.is_bootstrap.is_(False),
+            PositionHistory.detected_at >= freshness_start,
+        )
+    ).scalars()
+    return list(rows)
+
+
+def _load_wallets(session: Session, wallet_ids: set[int]) -> dict[int, Wallet]:
+    if not wallet_ids:
+        return {}
+    rows = session.execute(select(Wallet).where(Wallet.id.in_(wallet_ids))).scalars()
+    return {wallet.id: wallet for wallet in rows}
+
+
+def _load_markets(session: Session, condition_ids: set[str]) -> dict[str, Market]:
+    if not condition_ids:
+        return {}
+    rows = session.execute(select(Market).where(Market.condition_id.in_(condition_ids))).scalars()
+    return {market.condition_id: market for market in rows}
+
+
+def _latest_scores_by_wallet(session: Session, wallet_ids: set[int]) -> dict[int, Decimal]:
+    """Each contributing wallet's most recent trader_scores.score."""
+    if not wallet_ids:
+        return {}
+    ranked = (
+        select(
+            TraderScore.wallet_id,
+            TraderScore.score,
+            func.row_number()
+            .over(partition_by=TraderScore.wallet_id, order_by=TraderScore.captured_at.desc())
+            .label("rn"),
+        )
+        .where(TraderScore.wallet_id.in_(wallet_ids))
+        .subquery()
+    )
+    rows = session.execute(select(ranked.c.wallet_id, ranked.c.score).where(ranked.c.rn == 1)).all()
+    return dict(rows)
+
+
+def _latest_prices_by_asset(session: Session, assets: set[str]) -> dict[str, Decimal]:
+    """Each asset's most recent prices row, regardless of age."""
+    if not assets:
+        return {}
+    ranked = (
+        select(
+            PriceSnapshot.asset,
+            PriceSnapshot.price,
+            func.row_number()
+            .over(partition_by=PriceSnapshot.asset, order_by=PriceSnapshot.captured_at.desc())
+            .label("rn"),
+        )
+        .where(PriceSnapshot.asset.in_(assets))
+        .subquery()
+    )
+    rows = session.execute(select(ranked.c.asset, ranked.c.price).where(ranked.c.rn == 1)).all()
+    return dict(rows)
+
+
+def _acted_size(row: PositionHistory) -> Decimal:
+    """How much size actually moved: the full size for an open, the delta for an increase."""
+    if row.event_type == "OPENED":
+        return row.size_after
+    return row.size_after - (row.size_before or Decimal(0))
+
+
+def _entry_price(row: PositionHistory) -> Decimal:
+    """avg_price, falling back to cur_price when avg_price isn't usable."""
+    if row.avg_price and row.avg_price > 0:
+        return row.avg_price
+    return row.cur_price
+
+
+def _build_groups(
+    events: list[PositionHistory],
+    wallets: dict[int, Wallet],
+    scores: dict[int, Decimal],
+    markets: dict[str, Market],
+) -> list[CandidateGroup]:
+    grouped: dict[tuple[str, str], list[ContributorEvent]] = defaultdict(list)
+    meta: dict[tuple[str, str], tuple[str, str]] = {}
+
+    for row in events:
+        wallet = wallets.get(row.wallet_id)
+        if wallet is None:
+            continue
+        key = (row.condition_id, row.asset)
+        grouped[key].append(
+            ContributorEvent(
+                address=wallet.address,
+                username=wallet.username,
+                weight=scores.get(row.wallet_id, Decimal(0)),
+                event_type=row.event_type,
+                acted_size=_acted_size(row),
+                entry_price=_entry_price(row),
+                detected_at=row.detected_at,
+            )
+        )
+        meta[key] = (row.outcome, row.title)
+
+    groups = []
+    for (condition_id, asset), contributor_events in grouped.items():
+        outcome, title = meta[(condition_id, asset)]
+        market = markets.get(condition_id)
+        event_slug = market.event_slug if market and market.event_slug else ""
+        groups.append(
+            CandidateGroup(
+                condition_id=condition_id,
+                asset=asset,
+                outcome=outcome,
+                title=title,
+                event_slug=event_slug,
+                events=contributor_events,
+            )
+        )
+    return groups
+
+
+def _market_state(market: Market | None, current_price: Decimal | None) -> MarketState:
+    if market is None:
+        return MarketState(
+            exists=False,
+            closed=False,
+            accepting_orders=False,
+            end_date=None,
+            liquidity=None,
+            volume_24h=None,
+            spread=None,
+            current_price=None,
+        )
+    return MarketState(
+        exists=True,
+        closed=market.closed,
+        accepting_orders=market.accepting_orders,
+        end_date=market.end_date,
+        liquidity=market.liquidity,
+        volume_24h=market.volume_24h,
+        spread=market.spread,
+        current_price=current_price if current_price is not None else market.last_trade_price,
+    )
+
+
+def _apply_draft(session: Session, draft: SignalDraft, now: datetime, settings: Settings) -> str:
+    """Duplicate detection: reinforce an existing ACTIVE signal, or insert a new one."""
+    existing = (
+        session.execute(
+            select(Signal)
+            .where(
+                Signal.condition_id == draft.condition_id,
+                Signal.asset == draft.asset,
+                Signal.status == SignalStatus.ACTIVE,
+            )
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+    contributors_json = [
+        {
+            "address": event.address,
+            "username": event.username,
+            "weight": str(event.weight),
+            "event_type": event.event_type,
+            "acted_size": str(event.acted_size),
+            "entry_price": str(event.entry_price),
+            "detected_at": event.detected_at.isoformat(),
+        }
+        for event in draft.contributors
+    ]
+
+    if existing is not None:
+        existing.distinct_traders = draft.distinct_traders
+        existing.weighted_score = draft.weighted_score
+        existing.combined_entry_value = draft.combined_entry_value
+        existing.average_entry_price = draft.average_entry_price
+        existing.latest_market_price = draft.latest_market_price
+        existing.contributors = contributors_json
+        existing.updated_at = now
+        return "reinforced"
+
+    session.add(
+        Signal(
+            condition_id=draft.condition_id,
+            asset=draft.asset,
+            outcome=draft.outcome,
+            title=draft.title,
+            event_slug=draft.event_slug,
+            side="BUY",
+            status=SignalStatus.ACTIVE,
+            distinct_traders=draft.distinct_traders,
+            weighted_score=draft.weighted_score,
+            combined_entry_value=draft.combined_entry_value,
+            average_entry_price=draft.average_entry_price,
+            latest_market_price=draft.latest_market_price,
+            contributors=contributors_json,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(hours=settings.signal_ttl_hours),
+        )
+    )
+    return "new"
+
+
+def _build_funnel_line(
+    event_count: int,
+    group_count: int,
+    results: list[SignalDraft | Rejection],
+    new_count: int,
+    reinforced_count: int,
+) -> str:
+    rejected_counts = Counter(result.reason for result in results if isinstance(result, Rejection))
+
+    survived = group_count
+    survived_after: dict[RejectionReason, int] = {}
+    for reason in _FUNNEL_ORDER:
+        survived -= rejected_counts.get(reason, 0)
+        survived_after[reason] = survived
+
+    return (
+        f"funnel: {event_count} events -> {group_count} groups -> "
+        f"market {survived_after[RejectionReason.MARKET_OPEN]} -> "
+        f"liquidity {survived_after[RejectionReason.LIQUIDITY]} -> "
+        f"price {survived_after[RejectionReason.PRICE_BAND]} -> "
+        f"spread {survived_after[RejectionReason.SPREAD]} -> "
+        f"breadth {survived_after[RejectionReason.BREADTH]} -> "
+        f"quality {survived_after[RejectionReason.QUALITY]} -> "
+        f"conviction {survived_after[RejectionReason.CONVICTION]} -> "
+        f"new {new_count}, reinforced {reinforced_count}"
+    )
+
+
+def _format_new_signal_line(draft: SignalDraft, market: Market | None) -> str:
+    liquidity = market.liquidity if market and market.liquidity is not None else Decimal(0)
+    return (
+        f"signal: {draft.title} [{draft.outcome}] traders={draft.distinct_traders} "
+        f"weighted_score={draft.weighted_score:.4f} "
+        f"combined_value=${draft.combined_entry_value:.2f} "
+        f"entry={draft.average_entry_price:.4f} current={draft.latest_market_price:.4f} "
+        f"liquidity=${liquidity:.2f}"
+    )

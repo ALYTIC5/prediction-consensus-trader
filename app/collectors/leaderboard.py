@@ -4,13 +4,13 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.schemas import LeaderboardEntry
 from app.config.settings import Settings
+from app.consensus.scorer import run_scoring
 from app.db.models import LeaderboardSnapshot, Wallet
 from app.db.session import db_session
 
@@ -18,7 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 async def collect(client: PolymarketClient, settings: Settings) -> None:
-    """Fetch top traders for every configured period and persist them."""
+    """Fetch top traders for every configured period, persist, then score.
+
+    Collection and judgment are deliberately separate steps: this function
+    only fetches and stores what the API said; app/consensus/scorer.py
+    decides who's actually worth tracking, based on the scores it computes
+    from what just got stored.
+    """
     captured_at = datetime.now(UTC)
     entries_by_period: dict[str, list[LeaderboardEntry]] = {}
 
@@ -32,8 +38,10 @@ async def collect(client: PolymarketClient, settings: Settings) -> None:
         logger.info("leaderboard: fetched %d traders for period=%s", len(entries), period)
         entries_by_period[period] = entries
 
-    tracked_count = await asyncio.to_thread(_persist, entries_by_period, captured_at, settings)
-    logger.info("leaderboard: %d wallets now tracked", tracked_count)
+    stored_count = await asyncio.to_thread(_persist, entries_by_period, captured_at, settings)
+    logger.info("leaderboard: stored %d snapshot rows", stored_count)
+
+    await asyncio.to_thread(run_scoring, settings)
 
 
 def _persist(
@@ -41,7 +49,8 @@ def _persist(
     captured_at: datetime,
     settings: Settings,
 ) -> int:
-    """Blocking DB work: upsert wallets, insert snapshots, refresh tracked set."""
+    """Blocking DB work: upsert wallets, insert snapshots."""
+    stored = 0
     with db_session() as session:
         for period, entries in entries_by_period.items():
             for entry in entries:
@@ -58,28 +67,8 @@ def _persist(
                         volume=entry.vol,
                     )
                 )
-
-        tracked_addresses = {
-            entry.proxy_wallet
-            for entries in entries_by_period.values()
-            for entry in entries
-            if entry.rank is not None and entry.rank <= settings.tracked_wallets_limit
-        }
-
-        # Refresh the tracked set atomically, in this same transaction: clear
-        # everyone, then re-mark only this cycle's top-ranked wallets. This
-        # is a deliberately simple placeholder - phase 3 replaces "was in
-        # the top N on the leaderboard this cycle" with real trader scoring
-        # (win rate, consistency, risk-adjusted PnL, etc.).
-        session.execute(update(Wallet).values(is_tracked=False))
-        if tracked_addresses:
-            session.execute(
-                update(Wallet).where(Wallet.address.in_(tracked_addresses)).values(is_tracked=True)
-            )
-
-        return session.execute(
-            select(func.count()).select_from(Wallet).where(Wallet.is_tracked.is_(True))
-        ).scalar_one()
+                stored += 1
+    return stored
 
 
 def _upsert_wallet(session: Session, entry: LeaderboardEntry, captured_at: datetime) -> int:

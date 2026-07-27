@@ -9,6 +9,7 @@ from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import quote_plus
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +56,42 @@ class Settings(BaseSettings):
     leaderboard_interval_seconds: int = 3600
     positions_interval_seconds: int = 120
     markets_interval_seconds: int = 600
+
+    # --- Phase 3: trader scoring, consensus engine, signal generation ---
+    # See docs/PHASE3_DESIGN.md. Every threshold here, none hardcoded in
+    # app/consensus or app/signals - a hardcoded threshold there is a bug.
+    scoring_lookback_days: int = 14
+    score_weight_month: Decimal = Decimal("0.45")
+    score_weight_all_time: Decimal = Decimal("0.25")
+    score_weight_consistency: Decimal = Decimal("0.30")
+
+    consensus_interval_seconds: int = 300
+    consensus_freshness_hours: int = 48
+    consensus_include_increases: bool = True
+    consensus_min_traders: int = 3
+    consensus_min_weighted_score: Decimal = Decimal("1.0")
+    consensus_min_combined_value_usd: Decimal = Decimal("500")
+
+    signal_min_liquidity_usd: Decimal = Decimal("5000")
+    signal_min_volume_24h_usd: Decimal = Decimal("1000")
+    signal_price_min: Decimal = Decimal("0.05")
+    signal_price_max: Decimal = Decimal("0.95")
+    signal_max_spread: Decimal = Decimal("0.05")
+    signal_min_hours_to_end: int = 12
+    signal_ttl_hours: int = 72
+
+    @model_validator(mode="after")
+    def _validate_score_weights(self) -> "Settings":
+        """A silent weight mis-sum would quietly under/over-weight every wallet."""
+        total = self.score_weight_month + self.score_weight_all_time + self.score_weight_consistency
+        if total != Decimal("1.0"):
+            raise ValueError(
+                "score weights must sum to 1.0, got "
+                f"{total} (month={self.score_weight_month}, "
+                f"all_time={self.score_weight_all_time}, "
+                f"consistency={self.score_weight_consistency})"
+            )
+        return self
 
     @property
     def leaderboard_periods(self) -> list[str]:

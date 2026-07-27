@@ -13,6 +13,7 @@ from app.collectors.markets import collect as collect_markets
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
+from app.signals.generator import generate as generate_signals
 from app.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--leaderboard", action="store_true", help="run the leaderboard collector")
     parser.add_argument("--positions", action="store_true", help="run the positions collector")
     parser.add_argument("--markets", action="store_true", help="run the markets collector")
+    parser.add_argument("--consensus", action="store_true", help="run signal generation")
     args = parser.parse_args()
 
-    if not (args.all or args.leaderboard or args.positions or args.markets):
-        parser.error("nothing to do - pass --all, --leaderboard, --positions, and/or --markets")
+    if not (args.all or args.leaderboard or args.positions or args.markets or args.consensus):
+        parser.error(
+            "nothing to do - pass --all, --leaderboard, --positions, --markets, and/or --consensus"
+        )
 
     return args
 
@@ -37,8 +41,10 @@ async def _run(args: argparse.Namespace) -> None:
     client = PolymarketClient()
     try:
         # Fixed order regardless of flag order: leaderboard must run before
-        # positions (tracked wallets must exist first), and markets last
-        # (its work list is derived from open positions/markets).
+        # positions (tracked wallets must exist first), markets after
+        # positions (its work list is derived from open positions/markets),
+        # and consensus last of all (it needs fresh position_history events
+        # and fresh market rows to evaluate against).
         if args.all or args.leaderboard:
             logger.info("collect_once: running leaderboard")
             await collect_leaderboard(client, settings)
@@ -48,6 +54,9 @@ async def _run(args: argparse.Namespace) -> None:
         if args.all or args.markets:
             logger.info("collect_once: running markets")
             await collect_markets(client, settings)
+        if args.all or args.consensus:
+            logger.info("collect_once: running consensus")
+            await generate_signals(settings)
     finally:
         await client.aclose()
 

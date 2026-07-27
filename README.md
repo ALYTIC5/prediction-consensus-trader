@@ -31,8 +31,8 @@ uv run python scripts/verify_setup.py
 | `app/config`          | Settings (env vars read here, nowhere else)             |
 | `app/db`              | SQLAlchemy engine, session, models                       |
 | `app/collectors`      | Public API clients and data collectors                   |
-| `app/consensus`       | Consensus scoring across traders (phase 3)               |
-| `app/signals`         | Signal generation from scored consensus (phase 3)        |
+| `app/consensus`       | Trader scoring and the pure consensus-filtering engine    |
+| `app/signals`         | Orchestrates the consensus engine into persisted signals  |
 | `app/paper`           | Paper-trading engine (phase 4)                           |
 | `app/risk`            | Risk and position-sizing rules (phase 5)                 |
 | `app/execution`       | Real order execution, gated off (phase 6)                |
