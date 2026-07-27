@@ -24,6 +24,24 @@ uv run alembic upgrade head
 uv run python scripts/verify_setup.py
 ```
 
+## Operations console
+
+```bash
+uv run python scripts/run_dashboard.py
+```
+
+Binds to `127.0.0.1:8000` only - never `0.0.0.0`. There's no authentication,
+which is acceptable only because it's unreachable off this machine; remote
+access waits for a later phase and real auth. Pages: Overview, Signals,
+Traders, Markets, Events, Tuning, Logs. Design notes in
+`docs/PHASE8_DESIGN.md`.
+
+The Tuning page's overrides are written to the `runtime_overrides` table in
+Postgres, never to `.env` - they're picked up fresh on the next scoring/
+signal-generation cycle, no restart, and disappear if you reset them or
+truncate the table. `.env` stays the one source of truth for everything
+that actually needs a restart.
+
 ## Folders
 
 | Folder               | Purpose                                                |
@@ -37,7 +55,7 @@ uv run python scripts/verify_setup.py
 | `app/risk`            | Risk and position-sizing rules (phase 5)                 |
 | `app/execution`       | Real order execution, gated off (phase 6)                |
 | `app/notifications`   | Alerting (phase 7)                                       |
-| `app/dashboard`       | Monitoring dashboard (phase 8)                           |
+| `app/dashboard`       | Ops console (FastAPI/Jinja2/htmx) - see `docs/PHASE8_DESIGN.md` |
 | `app/scheduler`       | Scheduled jobs                                           |
 | `app/utils`           | Shared helpers                                           |
 | `alembic/`            | Database migrations                                      |

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}polybot console{% endblock %}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ url_for('static', path='console.css') }}">
+
+  <!-- Pinned to current stable releases, verified against the CDN at
+       implementation time (not guessed) - see docs/PHASE8_DESIGN.md. -->
+  <script src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <div class="header__app">POLYBOT <span class="text-dim">/ console</span></div>
+      <div class="header__meta">
+        <span>{{ environment | default("development") }}</span>
+        <span id="header-heartbeat" title="checking...">
+          <span class="status-dot"></span>
+        </span>
+      </div>
+    </header>
+
+    <nav class="nav">
+      <a class="nav__link {% if active_page == 'overview' %}nav__link--active{% endif %}" href="/">Overview</a>
+      <a class="nav__link {% if active_page == 'signals' %}nav__link--active{% endif %}" href="/signals">Signals</a>
+      <a class="nav__link {% if active_page == 'traders' %}nav__link--active{% endif %}" href="/traders">Traders</a>
+      <a class="nav__link {% if active_page == 'markets' %}nav__link--active{% endif %}" href="/markets">Markets</a>
+      <a class="nav__link {% if active_page == 'events' %}nav__link--active{% endif %}" href="/events">Events</a>
+      <a class="nav__link {% if active_page == 'tuning' %}nav__link--active{% endif %}" href="/tuning">Tuning</a>
+      <a class="nav__link {% if active_page == 'logs' %}nav__link--active{% endif %}" href="/logs">Logs</a>
+    </nav>
+
+    <main class="main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <script>
+    // /healthz is JSON, not an HTML fragment, so this is a small plain
+    // fetch poller rather than an htmx swap - htmx handles every other
+    // auto-refreshing piece of this console, just not this one.
+    (function () {
+      var el = document.getElementById("header-heartbeat");
+      var dot = el.querySelector(".status-dot");
+
+      function classify(payload) {
+        if (payload.db && payload.redis) return "fresh";
+        if (payload.db || payload.redis) return "stale";
+        return "dead";
+      }
+
+      function poll() {
+        fetch("/healthz")
+          .then(function (response) { return response.json(); })
+          .then(function (payload) {
+            var state = classify(payload);
+            dot.className = "status-dot status-dot--" + state;
+            el.title = "db=" + payload.db + " redis=" + payload.redis + " at " + payload.time;
+          })
+          .catch(function () {
+            dot.className = "status-dot status-dot--dead";
+            el.title = "healthz unreachable";
+          });
+      }
+
+      poll();
+      setInterval(poll, 10000);
+    })();
+  </script>
+
+  <script>
+    // Shared by any htmx-polled feed that wants the 300ms phosphor
+    // left-border flash on rows that just arrived (not on rows already
+    // present). Two calls: markSeenRows once against the page's initial
+    // server-rendered content (so nothing flashes on first load), then
+    // flashNewRows after every subsequent htmx swap.
+    function markSeenRows(container, rowSelector) {
+      var seen = new Set();
+      container.querySelectorAll(rowSelector).forEach(function (row) {
+        seen.add(row.getAttribute("data-row-id"));
+      });
+      container._seenRowIds = seen;
+    }
+
+    function flashNewRows(container, rowSelector) {
+      var seen = container._seenRowIds || (container._seenRowIds = new Set());
+      var freshRows = [];
+      container.querySelectorAll(rowSelector).forEach(function (row) {
+        var id = row.getAttribute("data-row-id");
+        if (!seen.has(id)) {
+          freshRows.push(row);
+          seen.add(id);
+        }
+      });
+      if (freshRows.length === 0) return;
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+      freshRows.forEach(function (row) { row.classList.add("flash"); });
+      // Remove on the next frame so the browser registers the "on" state
+      // first, then transitions it back off over the CSS 300ms duration.
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          freshRows.forEach(function (row) { row.classList.remove("flash"); });
+        });
+      });
+    }
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

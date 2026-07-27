@@ -1,0 +1,33 @@
+{# htmx-polled fragment (GET /fragments/events, every 5s, plus on filter
+   change) - each row carries data-row-id so base.html's flashNewRows() can
+   tell a genuinely new row from one that was already on screen. #}
+{% if events %}
+<div class="data-table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Event</th>
+        <th>Title</th>
+        <th>Wallet</th>
+        <th class="num">Size</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for event in events %}
+      <tr data-row-id="{{ event.id }}">
+        <td>{{ event.detected_at | relative_time }}</td>
+        <td class="tape__event--{{ event.event_type | lower }}">{{ event.event_type }}</td>
+        <td>{{ event.title }} <span class="text-dim">[{{ event.outcome }}]</span></td>
+        <td class="text-dim">{{ event.username or (event.address | short_address) }}</td>
+        <td class="num">{{ "%.2f"|format(event.size_after) }}</td>
+        <td>{% if event.is_bootstrap %}<span class="tag tag--amber">Bootstrap</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty-state">No events match the current filters.</p>
+{% endif %}

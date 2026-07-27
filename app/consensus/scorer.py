@@ -12,7 +12,7 @@ from decimal import Decimal
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.config.settings import Settings
+from app.config.effective import get_effective_settings
 from app.consensus.scoring import ScoreBreakdown, ScoreInputs, ScoreWeights, compute_score
 from app.db.models import LeaderboardSnapshot, TraderScore, Wallet
 from app.db.session import db_session
@@ -22,13 +22,16 @@ logger = logging.getLogger(__name__)
 _LOG_TOP_N = 10
 
 
-def run_scoring(settings: Settings) -> None:
+def run_scoring() -> None:
     """Score every wallet seen in the lookback window and refresh is_tracked.
 
     Must run after leaderboard_snapshots has been written for this cycle -
     it scores whatever's already in the table, it doesn't fetch anything
-    itself.
+    itself. Already runs inside asyncio.to_thread (called from
+    app/collectors/leaderboard.py), so it's safe to do its own blocking
+    settings fetch here too.
     """
+    settings = get_effective_settings()
     weights = ScoreWeights(
         month=settings.score_weight_month,
         all_time=settings.score_weight_all_time,

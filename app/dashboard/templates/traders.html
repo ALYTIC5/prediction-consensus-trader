@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Traders - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title"><span>Trader scores</span></div>
+  {% if traders %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th class="num">Rank</th>
+          <th>Username</th>
+          <th>Address</th>
+          <th>Month</th>
+          <th>All-time</th>
+          <th>Consistency</th>
+          <th class="num">Score</th>
+          <th>Tracked</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for trader in traders %}
+        <tr>
+          <td class="num">{{ loop.index }}</td>
+          <td><a href="/traders/{{ trader.wallet_id }}">{{ trader.username or "-" }}</a></td>
+          <td><a href="/traders/{{ trader.wallet_id }}">{{ trader.address | short_address }}</a></td>
+          <td>
+            <span class="score-bar-track">
+              <span class="score-bar-fill" style="width: {{ ([trader.month_component * 100, 100] | min) | round(1) }}%;"></span>
+            </span>
+          </td>
+          <td>
+            <span class="score-bar-track">
+              <span class="score-bar-fill" style="width: {{ ([trader.all_time_component * 100, 100] | min) | round(1) }}%;"></span>
+            </span>
+          </td>
+          <td>
+            <span class="score-bar-track">
+              <span class="score-bar-fill" style="width: {{ ([trader.consistency_component * 100, 100] | min) | round(1) }}%;"></span>
+            </span>
+          </td>
+          <td class="num">{{ "%.3f"|format(trader.score) }}</td>
+          <td>
+            {% if trader.is_tracked %}
+            <span class="status-dot status-dot--fresh" title="tracked"></span>
+            {% else %}
+            <span class="status-dot status-dot--dead" title="not tracked"></span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No trader scores yet. They appear after the first scoring cycle.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

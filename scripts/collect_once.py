@@ -56,7 +56,7 @@ async def _run(args: argparse.Namespace) -> None:
             await collect_markets(client, settings)
         if args.all or args.consensus:
             logger.info("collect_once: running consensus")
-            await generate_signals(settings)
+            await generate_signals()
     finally:
         await client.aclose()
 

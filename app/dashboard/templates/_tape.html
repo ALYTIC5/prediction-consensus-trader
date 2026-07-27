@@ -1,0 +1,17 @@
+{# htmx-polled fragment (GET /fragments/tape, every 5s) - also included
+   directly on first page load so the panel isn't empty before the first
+   poll fires. Bootstrap events are excluded at the query layer, always. #}
+{% if tape_events %}
+<div class="tape">
+  {% for event in tape_events %}
+  <div class="tape__row">
+    <span class="tape__time">{{ event.detected_at | relative_time }}</span>
+    <span class="tape__event--{{ event.event_type | lower }}">{{ event.event_type }}</span>
+    <span class="tape__title">{{ event.title }} <span class="text-dim">[{{ event.outcome }}]</span></span>
+    <span class="tape__wallet">{{ event.username or (event.address | short_address) }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No recent activity yet.</p>
+{% endif %}

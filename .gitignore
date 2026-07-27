@@ -15,3 +15,6 @@ dist/
 
 # graphify tool output/cache - regenerable, not source
 graphify-out/
+
+# Operational log output, not source
+logs/

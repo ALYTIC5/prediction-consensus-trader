@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Markets - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Markets</span>
+    <span style="font-weight: 400; font-size: 12px;">
+      <a href="/markets?status=open" class="{{ 'text-phosphor' if status == 'open' else 'text-dim' }}">Open</a>
+      &nbsp;/&nbsp;
+      <a href="/markets?status=closed" class="{{ 'text-phosphor' if status == 'closed' else 'text-dim' }}">Closed</a>
+      &nbsp;/&nbsp;
+      <a href="/markets?status=all" class="{{ 'text-phosphor' if status == 'all' else 'text-dim' }}">All</a>
+    </span>
+  </div>
+
+  {% if markets %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Question</th>
+          <th>Outcome prices</th>
+          <th class="num">Liquidity</th>
+          <th class="num">Volume 24h</th>
+          <th class="num">Spread</th>
+          <th>Ends</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for market in markets %}
+        <tr>
+          <td><a href="/markets/{{ market.id }}">{{ market.question }}</a></td>
+          <td>
+            {% for op in market.outcome_prices %}
+            <span class="text-dim">{{ op.outcome }}</span>
+            {{ "%.3f"|format(op.price) if op.price is not none else "-" }}{% if not loop.last %} / {% endif %}
+            {% endfor %}
+          </td>
+          <td class="num">{% if market.liquidity is not none %}${{ "{:,.0f}".format(market.liquidity) }}{% else %}&mdash;{% endif %}</td>
+          <td class="num">{% if market.volume_24h is not none %}${{ "{:,.0f}".format(market.volume_24h) }}{% else %}&mdash;{% endif %}</td>
+          <td class="num">{% if market.spread is not none %}{{ "%.3f"|format(market.spread) }}{% else %}&mdash;{% endif %}</td>
+          <td>{{ market.end_date | relative_time }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">
+    No {{ status }} markets held by tracked wallets right now.
+  </p>
+  {% endif %}
+</div>
+
+{% endblock %}

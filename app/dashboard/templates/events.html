@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Events - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title"><span>Filters</span></div>
+  <form id="events-filter-form">
+    <label class="micro-label">
+      Event type
+      <select name="event_type">
+        <option value="" {% if not event_type %}selected{% endif %}>All</option>
+        <option value="OPENED" {% if event_type == "OPENED" %}selected{% endif %}>Opened</option>
+        <option value="INCREASED" {% if event_type == "INCREASED" %}selected{% endif %}>Increased</option>
+        <option value="DECREASED" {% if event_type == "DECREASED" %}selected{% endif %}>Decreased</option>
+        <option value="CLOSED" {% if event_type == "CLOSED" %}selected{% endif %}>Closed</option>
+      </select>
+    </label>
+    &nbsp;&nbsp;
+    <label class="micro-label">
+      <input type="checkbox" name="include_bootstrap" value="1" {% if include_bootstrap %}checked{% endif %}>
+      Include bootstrap
+    </label>
+  </form>
+</div>
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Events</span>
+    <span class="text-dim" style="font-weight: 400; font-size: 11px;">newest first, capped at 200</span>
+  </div>
+  <div
+    id="events-container"
+    hx-get="/fragments/events"
+    hx-include="#events-filter-form"
+    hx-trigger="every 5s, change from:#events-filter-form"
+    hx-swap="innerHTML"
+  >
+    {% include "_events_table.html" %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var container = document.getElementById("events-container");
+    // Initial server-rendered rows are already "seen" - only rows that
+    // arrive in a later poll or filter change should flash.
+    markSeenRows(container, "tr[data-row-id]");
+    container.addEventListener("htmx:afterSwap", function () {
+      flashNewRows(container, "tr[data-row-id]");
+    });
+  })();
+</script>
+{% endblock %}

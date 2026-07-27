@@ -55,7 +55,7 @@ async def _run() -> None:
             ),
             PeriodicJob(
                 name="consensus",
-                run=lambda: generate_signals(settings),
+                run=generate_signals,
                 interval_seconds=settings.consensus_interval_seconds,
             ),
         ]

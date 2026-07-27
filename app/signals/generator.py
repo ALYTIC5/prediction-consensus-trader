@@ -15,6 +15,7 @@ from decimal import Decimal
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.config.effective import get_effective_settings
 from app.config.settings import Settings
 from app.consensus.engine import (
     CandidateGroup,
@@ -27,6 +28,7 @@ from app.consensus.engine import (
     evaluate_group,
 )
 from app.db.models import (
+    ConsensusRun,
     Market,
     PositionHistory,
     PriceSnapshot,
@@ -58,10 +60,10 @@ class _CycleResult:
     new_signal_lines: list[str]
 
 
-async def generate(settings: Settings) -> None:
+async def generate() -> None:
     """Run one full signal-generation cycle: expire, evaluate, persist, log."""
     now = datetime.now(UTC)
-    result = await asyncio.to_thread(_run_cycle, settings, now)
+    result = await asyncio.to_thread(_run_cycle, now)
 
     if result.expired_count:
         logger.info("signals: expired %d signals", result.expired_count)
@@ -70,7 +72,12 @@ async def generate(settings: Settings) -> None:
         logger.info(line)
 
 
-def _run_cycle(settings: Settings, now: datetime) -> _CycleResult:
+def _run_cycle(now: datetime) -> _CycleResult:
+    # Already running inside asyncio.to_thread, so it's safe to do this
+    # module's own blocking settings/DB work here directly. Fetched fresh
+    # every cycle - see docs/PHASE8_DESIGN.md flags 3-4 - so a tuning change
+    # takes effect on the very next run, no restart required.
+    settings = get_effective_settings()
     config = ConsensusConfig.from_settings(settings)
 
     with db_session() as session:
@@ -108,8 +115,25 @@ def _run_cycle(settings: Settings, now: datetime) -> _CycleResult:
                 else:
                     reinforced_count += 1
 
+        survived_after = _funnel_counts(len(groups), results)
         funnel_line = _build_funnel_line(
-            len(events), len(groups), results, new_count, reinforced_count
+            len(events), len(groups), survived_after, new_count, reinforced_count
+        )
+        session.add(
+            ConsensusRun(
+                executed_at=now,
+                events=len(events),
+                groups=len(groups),
+                market=survived_after[RejectionReason.MARKET_OPEN],
+                liquidity=survived_after[RejectionReason.LIQUIDITY],
+                price=survived_after[RejectionReason.PRICE_BAND],
+                spread=survived_after[RejectionReason.SPREAD],
+                breadth=survived_after[RejectionReason.BREADTH],
+                quality=survived_after[RejectionReason.QUALITY],
+                conviction=survived_after[RejectionReason.CONVICTION],
+                new_signals=new_count,
+                reinforced=reinforced_count,
+            )
         )
 
     return _CycleResult(
@@ -343,13 +367,12 @@ def _apply_draft(session: Session, draft: SignalDraft, now: datetime, settings: 
     return "new"
 
 
-def _build_funnel_line(
-    event_count: int,
-    group_count: int,
-    results: list[SignalDraft | Rejection],
-    new_count: int,
-    reinforced_count: int,
-) -> str:
+def _funnel_counts(
+    group_count: int, results: list[SignalDraft | Rejection]
+) -> dict[RejectionReason, int]:
+    """Survivor count after each filter, cumulative - how many groups had
+    NOT yet been rejected once this filter (or an earlier one) had run.
+    """
     rejected_counts = Counter(result.reason for result in results if isinstance(result, Rejection))
 
     survived = group_count
@@ -357,7 +380,16 @@ def _build_funnel_line(
     for reason in _FUNNEL_ORDER:
         survived -= rejected_counts.get(reason, 0)
         survived_after[reason] = survived
+    return survived_after
 
+
+def _build_funnel_line(
+    event_count: int,
+    group_count: int,
+    survived_after: dict[RejectionReason, int],
+    new_count: int,
+    reinforced_count: int,
+) -> str:
     return (
         f"funnel: {event_count} events -> {group_count} groups -> "
         f"market {survived_after[RejectionReason.MARKET_OPEN]} -> "

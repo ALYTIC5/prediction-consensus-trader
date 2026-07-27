@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}{{ detail.market.question }} - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title"><span>{{ detail.market.question }}</span></div>
+  <p class="text-dim" style="font-family: var(--font-mono); font-size: 12px;">
+    {{ detail.market.condition_id }}
+  </p>
+  <div class="count-strip">
+    <div class="count-tile">
+      <div class="micro-label">Liquidity</div>
+      <div class="count-tile__value">
+        {% if detail.market.liquidity is not none %}${{ "{:,.0f}".format(detail.market.liquidity) }}{% else %}&mdash;{% endif %}
+      </div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Volume 24h</div>
+      <div class="count-tile__value">
+        {% if detail.market.volume_24h is not none %}${{ "{:,.0f}".format(detail.market.volume_24h) }}{% else %}&mdash;{% endif %}
+      </div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Spread</div>
+      <div class="count-tile__value">
+        {% if detail.market.spread is not none %}{{ "%.3f"|format(detail.market.spread) }}{% else %}&mdash;{% endif %}
+      </div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Ends</div>
+      <div class="count-tile__value" style="font-size: 18px;">{{ detail.market.end_date | relative_time }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Outcome price history</span></div>
+  {% if detail.outcome_prices %}
+  {% for op in detail.outcome_prices %}
+  <div class="sparkline-wrap">
+    <div class="micro-label">{{ op.outcome }} &mdash; {{ "%.3f"|format(op.price) if op.price is not none else "no price yet" }}</div>
+    {% if detail.price_series.get(op.asset) %}
+    <canvas id="sparkline-{{ loop.index }}" height="40"></canvas>
+    {% else %}
+    <p class="empty-state">No price history for this outcome yet.</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="empty-state">This market has no parsed outcomes to chart.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script id="sparkline-data" type="application/json">{{ sparkline_series_json | tojson }}</script>
+<script>
+  (function () {
+    var series = JSON.parse(document.getElementById("sparkline-data").textContent);
+    var outcomes = {{ detail.outcome_prices | tojson }};
+
+    outcomes.forEach(function (op, i) {
+      var points = series[op.asset];
+      if (!points || points.length === 0) return;
+      var canvas = document.getElementById("sparkline-" + (i + 1));
+      if (!canvas) return;
+
+      new Chart(canvas, {
+        type: "line",
+        data: {
+          labels: points.map(function (p) { return p.captured_at; }),
+          datasets: [{
+            data: points.map(function (p) { return p.price; }),
+            borderColor: "#5CF2C7",
+            backgroundColor: "transparent",
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0,
+          }],
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          scales: {
+            x: { display: false },
+            y: { display: false, min: 0, max: 1 },
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: { mode: "index", intersect: false },
+          },
+        },
+      });
+    });
+  })();
+</script>
+{% endblock %}

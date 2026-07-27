@@ -1,0 +1,63 @@
+{# htmx drill-down fragment (GET /fragments/signal/{id}) - everything here
+   comes from the signal's own row alone: its stored metrics restated, and
+   its contributors JSONB. No joins, no re-querying position_history - a
+   signal must be explainable from itself (see CLAUDE.md Code conventions). #}
+<div class="panel" style="margin: var(--space-2) 0 var(--space-4); background: var(--ink);">
+  <div class="panel__title">
+    <span>Evidence &mdash; {{ signal.condition_id[:10] }}&hellip; / {{ signal.asset[:10] }}&hellip;</span>
+  </div>
+
+  <div class="count-strip" style="margin-bottom: var(--space-3);">
+    <div class="count-tile">
+      <div class="micro-label">Distinct traders</div>
+      <div class="count-tile__value">{{ signal.distinct_traders }}</div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Weighted score</div>
+      <div class="count-tile__value">{{ "%.2f"|format(signal.weighted_score) }}</div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Combined value</div>
+      <div class="count-tile__value">${{ "{:,.0f}".format(signal.combined_entry_value) }}</div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Entry / current price</div>
+      <div class="count-tile__value" style="font-size: 16px;">
+        {{ "%.3f"|format(signal.average_entry_price) }} / {{ "%.3f"|format(signal.latest_market_price) }}
+      </div>
+    </div>
+  </div>
+
+  {% if signal.contributors %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Address</th>
+          <th>Username</th>
+          <th class="num">Weight</th>
+          <th>Event</th>
+          <th class="num">Size</th>
+          <th class="num">Price</th>
+          <th>Detected</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in signal.contributors %}
+        <tr>
+          <td>{{ c.address | short_address }}</td>
+          <td>{{ c.username or "-" }}</td>
+          <td class="num">{{ "%.4f"|format(c.weight | float) }}</td>
+          <td class="tape__event--{{ c.event_type | lower }}">{{ c.event_type }}</td>
+          <td class="num">{{ "%.2f"|format(c.acted_size | float) }}</td>
+          <td class="num">{{ "%.3f"|format(c.entry_price | float) }}</td>
+          <td class="text-dim">{{ c.detected_at[:19] | replace("T", " ") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No contributor evidence stored on this row.</p>
+  {% endif %}
+</div>

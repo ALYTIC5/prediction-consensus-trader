@@ -1,0 +1,12 @@
+{# htmx-polled fragment (GET /fragments/logs, every 5s, pausable via
+   logs.html's pause toggle). Newest last - reads top-to-bottom like a
+   terminal, unlike the newest-first Events feed. #}
+{% if lines %}
+<pre class="log-view">{% for line, css_class in lines %}<span class="{{ css_class }}">{{ line }}</span>
+{% endfor %}</pre>
+{% else %}
+<p class="empty-state">
+  No log file yet. logs/polybot.log is created the first time a collector,
+  the scorer, the generator, or this dashboard writes a log line.
+</p>
+{% endif %}

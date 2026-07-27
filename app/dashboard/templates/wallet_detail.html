@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}{{ wallet.username or (wallet.address | short_address) }} - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>{{ wallet.username or "Wallet" }}
+      <span class="text-dim" style="font-weight: 400;">{{ wallet.address | short_address }}</span>
+    </span>
+    {% if wallet.is_tracked %}
+    <span class="status-dot status-dot--fresh" title="tracked"></span>
+    {% else %}
+    <span class="status-dot status-dot--dead" title="not tracked"></span>
+    {% endif %}
+  </div>
+  <p class="text-dim" style="font-family: var(--font-mono); font-size: 12px;">{{ wallet.address }}</p>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Open positions</span></div>
+  {% if wallet.open_positions %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Outcome</th>
+          <th class="num">Size</th>
+          <th class="num">Avg price</th>
+          <th class="num">Current price</th>
+          <th class="num">Value</th>
+          <th class="num">Cash PnL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for position in wallet.open_positions %}
+        <tr>
+          <td>{{ position.title }}</td>
+          <td>{{ position.outcome }}</td>
+          <td class="num">{{ "%.2f"|format(position.size) }}</td>
+          <td class="num">{{ "%.3f"|format(position.avg_price) }}</td>
+          <td class="num">{{ "%.3f"|format(position.cur_price) }}</td>
+          <td class="num">${{ "{:,.0f}".format(position.current_value) }}</td>
+          <td class="num {{ 'text-phosphor' if position.cash_pnl >= 0 else 'text-alert' }}">
+            ${{ "{:,.0f}".format(position.cash_pnl) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No open positions right now.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Recent events</span> <span class="text-dim" style="font-weight: 400; font-size: 11px;">last 50, including bootstrap</span></div>
+  {% if wallet.recent_events %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Event</th>
+          <th>Title</th>
+          <th>Outcome</th>
+          <th class="num">Size</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in wallet.recent_events %}
+        <tr>
+          <td>{{ event.detected_at | relative_time }}</td>
+          <td class="tape__event--{{ event.event_type | lower }}">{{ event.event_type }}</td>
+          <td>{{ event.title }}</td>
+          <td>{{ event.outcome }}</td>
+          <td class="num">{{ "%.2f"|format(event.size_after) }}</td>
+          <td>
+            {% if event.is_bootstrap %}<span class="tag tag--amber">Bootstrap</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No events recorded for this wallet yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -41,7 +41,7 @@ async def collect(client: PolymarketClient, settings: Settings) -> None:
     stored_count = await asyncio.to_thread(_persist, entries_by_period, captured_at, settings)
     logger.info("leaderboard: stored %d snapshot rows", stored_count)
 
-    await asyncio.to_thread(run_scoring, settings)
+    await asyncio.to_thread(run_scoring)
 
 
 def _persist(

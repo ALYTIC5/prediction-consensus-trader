@@ -1,0 +1,56 @@
+{# Rendered both as part of the full Tuning table (inside the {% for %} loop,
+   where error/confirmation/submitted_value are always None) and standalone
+   as the htmx response to an apply/reset POST, replacing this exact <tr>
+   via hx-swap="outerHTML". Everything about one row - value, error,
+   confirmation - lives in this single <tr> so a swap never leaves an
+   orphaned message row behind. #}
+<tr id="tuning-row-{{ row.key }}">
+  <td>{{ row.key }}</td>
+  <td class="text-dim">{{ row.description }}</td>
+  <td class="num">{{ row.default }}</td>
+  <td class="num">{{ row.current_override if row.current_override is not none else "—" }}</td>
+  <td class="num text-phosphor">{{ row.effective_value }}</td>
+  <td class="text-dim">
+    {% if row.min is not none or row.max is not none %}
+    [{{ row.min if row.min is not none else "-inf" }}, {{ row.max if row.max is not none else "inf" }}]
+    {% else %}
+    &mdash;
+    {% endif %}
+  </td>
+  <td>
+    {% if row.restart_required %}
+    <span class="tag tag--amber">Restart required</span>
+    {% else %}
+    {% set current_value = submitted_value if submitted_value is not none else (row.current_override or row.default) %}
+    <form
+      hx-post="/tuning/{{ row.key }}/apply"
+      hx-target="#tuning-row-{{ row.key }}"
+      hx-swap="outerHTML"
+      style="display: inline-flex; gap: var(--space-1); align-items: center;"
+    >
+      {% if row.type_name == "bool" %}
+      <select name="value" style="width: 70px;">
+        <option value="true" {% if current_value | lower == "true" %}selected{% endif %}>true</option>
+        <option value="false" {% if current_value | lower != "true" %}selected{% endif %}>false</option>
+      </select>
+      {% else %}
+      <input type="text" name="value" value="{{ current_value }}" style="width: 90px;">
+      {% endif %}
+      <button type="submit">Apply override</button>
+    </form>
+    <form
+      hx-post="/tuning/{{ row.key }}/reset"
+      hx-target="#tuning-row-{{ row.key }}"
+      hx-swap="outerHTML"
+      style="display: inline;"
+    >
+      <button type="submit" class="button--quiet">Reset to default</button>
+    </form>
+    {% if error %}
+    <div class="text-alert" style="font-size: 11px; margin-top: 4px;">{{ error }}</div>
+    {% elif confirmation %}
+    <div class="text-phosphor" style="font-size: 11px; margin-top: 4px;">{{ confirmation }}</div>
+    {% endif %}
+    {% endif %}
+  </td>
+</tr>

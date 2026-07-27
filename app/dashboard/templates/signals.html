@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% from "macros.html" import funnel_cascade %}
+
+{% block title %}Signals - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Consensus funnel &mdash; latest run</span>
+    {% if latest_run %}
+    <span class="text-dim" style="font-weight: 400; font-size: 12px;">{{ latest_run.executed_at | relative_time }}</span>
+    {% endif %}
+  </div>
+  {{ funnel_cascade(latest_run) }}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Active signals</span></div>
+  {% if active_signals %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Age</th>
+          <th>Title</th>
+          <th>Outcome</th>
+          <th class="num">Traders</th>
+          <th class="num">Weighted</th>
+          <th class="num">Value</th>
+          <th class="num">Entry</th>
+          <th class="num">Current</th>
+          <th class="num">Liquidity</th>
+          <th class="num">Expires</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in active_signals %}
+        <tr>
+          <td>{{ row.signal.created_at | relative_time }}</td>
+          <td>{{ row.signal.title }}</td>
+          <td>{{ row.signal.outcome }}</td>
+          <td class="num">{{ row.signal.distinct_traders }}</td>
+          <td class="num">{{ "%.2f"|format(row.signal.weighted_score) }}</td>
+          <td class="num">${{ "{:,.0f}".format(row.signal.combined_entry_value) }}</td>
+          <td class="num">{{ "%.3f"|format(row.signal.average_entry_price) }}</td>
+          <td class="num">{{ "%.3f"|format(row.signal.latest_market_price) }}</td>
+          <td class="num">
+            {% if row.liquidity is not none %}${{ "{:,.0f}".format(row.liquidity) }}{% else %}&mdash;{% endif %}
+          </td>
+          <td class="num">{{ row.signal.expires_at | relative_time }}</td>
+          <td>
+            <button
+              class="button--quiet"
+              hx-get="/fragments/signal/{{ row.signal.id }}"
+              hx-target="#drill-{{ row.signal.id }}"
+              hx-swap="innerHTML"
+            >Details</button>
+          </td>
+        </tr>
+        <tr>
+          <td colspan="11" style="padding: 0; border-bottom: none;">
+            <div id="drill-{{ row.signal.id }}"></div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">
+    No active signals. The funnel above shows where the last run's candidates were rejected.
+  </p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Recent history</span></div>
+  {% if history %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Title</th>
+          <th>Outcome</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for signal, kind in history %}
+        <tr>
+          <td>{{ signal.updated_at | relative_time }}</td>
+          <td>{{ signal.title }}</td>
+          <td>{{ signal.outcome }}</td>
+          <td>
+            {% if kind == "expired" %}
+            <span class="tag tag--alert">Expired</span>
+            {% else %}
+            <span class="tag tag--amber">Reinforced</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No expired or reinforced signals yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Funnel over time &mdash; last 48h</span></div>
+  {% if funnel_history %}
+  <canvas id="funnel-history-chart" height="90"></canvas>
+  <script id="funnel-history-data" type="application/json">{{ funnel_history_json | tojson }}</script>
+  {% else %}
+  <p class="empty-state">
+    Not enough history yet - the chart fills in as consensus runs accumulate.
+  </p>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{% if funnel_history %}
+<script>
+  (function () {
+    var raw = JSON.parse(document.getElementById("funnel-history-data").textContent);
+    var labels = raw.map(function (point) { return point.executed_at; });
+
+    // Progressively dimmer greys, interpolated from --dim to --grid, one
+    // per rejection stage; the final accepted segment is phosphor.
+    var greys = ["#8A93A6", "#788092", "#656D7F", "#535B6B", "#414857", "#2E3544", "#1C2230"];
+    var stageKeys = [
+      ["market_rejected", "Market"],
+      ["liquidity_rejected", "Liquidity"],
+      ["price_rejected", "Price"],
+      ["spread_rejected", "Spread"],
+      ["breadth_rejected", "Breadth"],
+      ["quality_rejected", "Quality"],
+      ["conviction_rejected", "Conviction"],
+    ];
+
+    var datasets = stageKeys.map(function (pair, i) {
+      return {
+        label: pair[1] + " rejected",
+        data: raw.map(function (point) { return point[pair[0]]; }),
+        backgroundColor: greys[i],
+        stack: "funnel",
+      };
+    });
+    datasets.push({
+      label: "New / reinforced",
+      data: raw.map(function (point) { return point.accepted; }),
+      backgroundColor: "#5CF2C7",
+      stack: "funnel",
+    });
+
+    new Chart(document.getElementById("funnel-history-chart"), {
+      type: "bar",
+      data: { labels: labels, datasets: datasets },
+      options: {
+        responsive: true,
+        scales: {
+          x: { stacked: true, ticks: { color: "#8A93A6", font: { family: "IBM Plex Mono", size: 10 } }, grid: { color: "#1C2230" } },
+          y: { stacked: true, ticks: { color: "#8A93A6" }, grid: { color: "#1C2230" }, beginAtZero: true },
+        },
+        plugins: {
+          legend: { labels: { color: "#8A93A6", font: { family: "IBM Plex Mono", size: 10 } } },
+          tooltip: { mode: "index", intersect: false },
+        },
+      },
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

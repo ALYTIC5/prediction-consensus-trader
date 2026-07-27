@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Logs - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>logs/polybot.log <span class="text-dim" style="font-weight: 400; font-size: 11px;">last 200 lines</span></span>
+    <button id="pause-toggle" type="button" class="button--quiet">Pause</button>
+  </div>
+  <div id="logs-container" hx-get="/fragments/logs" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "_logs.html" %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var container = document.getElementById("logs-container");
+    var button = document.getElementById("pause-toggle");
+    var paused = false;
+
+    button.addEventListener("click", function () {
+      paused = !paused;
+      button.textContent = paused ? "Resume" : "Pause";
+    });
+
+    // hx-trigger keeps ticking every 5s regardless; this just skips the
+    // actual request while paused, so resuming doesn't need to re-arm
+    // anything.
+    container.addEventListener("htmx:beforeRequest", function (evt) {
+      if (paused) evt.preventDefault();
+    });
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% from "macros.html" import funnel_cascade %}
+
+{% block title %}Overview - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="micro-label" style="margin-bottom: var(--space-2);">Heartbeat</div>
+<div class="panel">
+  <div class="heartbeat-row">
+    {% for hb in heartbeats %}
+    <div class="heartbeat">
+      <span class="status-dot status-dot--{{ hb.status }}"></span>
+      <span class="heartbeat__name">{{ hb.name }}</span>
+      <span class="heartbeat__age">{{ hb.last_write | relative_time }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="count-strip">
+  <div class="count-tile">
+    <div class="micro-label">Tracked wallets</div>
+    <div class="count-tile__value">{{ counts.tracked_wallets }}</div>
+  </div>
+  <div class="count-tile">
+    <div class="micro-label">Open positions</div>
+    <div class="count-tile__value">{{ counts.open_positions }}</div>
+  </div>
+  <div class="count-tile">
+    <div class="micro-label">Fresh events (24h)</div>
+    <div class="count-tile__value">{{ counts.fresh_events_24h }}</div>
+  </div>
+  <div class="count-tile">
+    <div class="micro-label">Active signals</div>
+    <div class="count-tile__value">{{ counts.active_signals }}</div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Consensus funnel</span>
+    {% if latest_run %}
+    <span class="text-dim" style="font-weight: 400; font-size: 12px;">{{ latest_run.executed_at | relative_time }}</span>
+    {% endif %}
+  </div>
+  {{ funnel_cascade(latest_run) }}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Paper PnL</span></div>
+  <p class="empty-state">Paper trading arrives in Phase 4.</p>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Activity tape</span></div>
+  <div
+    id="tape-container"
+    hx-get="/fragments/tape"
+    hx-trigger="load, every 5s"
+    hx-swap="innerHTML"
+  >
+    {% include "_tape.html" %}
+  </div>
+</div>
+
+{% endblock %}

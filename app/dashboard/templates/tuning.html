@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Tuning - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title"><span>Adjustable settings</span></div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Setting</th>
+          <th>Description</th>
+          <th class="num">Default</th>
+          <th class="num">Override</th>
+          <th class="num">Effective</th>
+          <th>Bounds</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        {% include "_tuning_row.html" %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Override log</span></div>
+  {% if audit %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Setting</th>
+          <th>Old value</th>
+          <th>New value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in audit %}
+        <tr>
+          <td>{{ entry.changed_at | relative_time }}</td>
+          <td>{{ entry.key }}</td>
+          <td class="text-dim">{{ entry.old_value if entry.old_value is not none else "—" }}</td>
+          <td>
+            {% if entry.new_value is not none %}
+            {{ entry.new_value }}
+            {% else %}
+            <span class="tag tag--amber">Reset</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No overrides have been changed yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

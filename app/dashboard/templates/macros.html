@@ -1,0 +1,50 @@
+{# Reusable Jinja macros. The funnel cascade is the console's signature
+   element (see docs/PHASE8_DESIGN.md) - built here once so Overview and
+   the Signals page render the exact same component from the exact same
+   ConsensusRun row shape. #}
+
+{% macro funnel_cascade(run) %}
+{% if run is none %}
+<p class="empty-state">
+  No consensus runs yet. The funnel below will show where candidates were
+  rejected once the generator has run at least once.
+</p>
+{% else %}
+{% set stages = [
+  ("events", run.events),
+  ("groups", run.groups),
+  ("market", run.market),
+  ("liquidity", run.liquidity),
+  ("price", run.price),
+  ("spread", run.spread),
+  ("breadth", run.breadth),
+  ("quality", run.quality),
+  ("conviction", run.conviction),
+] %}
+{% set max_count = run.events if run.events > 0 else 1 %}
+<div class="funnel">
+  {% for label, count in stages %}
+  {% set prev_count = stages[loop.index0 - 1][1] if loop.index0 > 0 else count %}
+  {% set rejected = (prev_count - count) if loop.index0 > 0 else 0 %}
+  {% set width_pct = (count / max_count * 100) %}
+  {% set reject_width_pct = (rejected / max_count * 100) %}
+  <div class="funnel__stage">
+    <span class="funnel__label">{{ label }}</span>
+    <span class="funnel__bar-track">
+      <span class="funnel__bar" style="width: {{ width_pct }}%;"></span>
+      {% if rejected > 0 %}
+      <span class="funnel__bar--reject" style="left: {{ width_pct }}%; width: {{ reject_width_pct }}%;"></span>
+      {% endif %}
+    </span>
+    <span class="funnel__count">{{ count }}</span>
+  </div>
+  {% endfor %}
+  <div class="funnel__stub">
+    <span class="text-dim">&rarr;</span>
+    <span class="text-phosphor">new {{ run.new_signals }}</span>
+    <span class="text-dim">,</span>
+    <span class="text-amber">reinforced {{ run.reinforced }}</span>
+  </div>
+</div>
+{% endif %}
+{% endmacro %}
