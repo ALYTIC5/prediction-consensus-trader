@@ -1,6 +1,6 @@
 """Declarative base shared by all ORM models."""
 
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, Numeric
 from sqlalchemy.orm import DeclarativeBase
 
 # Explicit naming convention so every constraint gets a predictable name
@@ -14,6 +14,16 @@ NAMING_CONVENTION = {
     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
     "pk": "pk_%(table_name)s",
 }
+
+# Shared column type for every money/size/PnL value in the schema.
+# IEEE-754 binary floats (Python float, SQL REAL/DOUBLE PRECISION) cannot
+# represent most decimal fractions exactly - 0.1 + 0.2 != 0.3 in binary
+# floating point - and that rounding error compounds silently through PnL
+# rollups and position-size math until numbers just stop reconciling.
+# NUMERIC(24,6) stores exact base-10 digits instead: 24 total digits, 6 after
+# the decimal point, comfortably covering Polymarket's largest observed
+# volumes/PnL while keeping sub-cent precision exact.
+Money = Numeric(24, 6)
 
 
 class Base(DeclarativeBase):

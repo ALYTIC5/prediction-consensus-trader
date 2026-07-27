@@ -12,3 +12,6 @@ dist/
 .vscode/
 .idea/
 .DS_Store
+
+# graphify tool output/cache - regenerable, not source
+graphify-out/

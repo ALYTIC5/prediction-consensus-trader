@@ -5,6 +5,7 @@ module, so every other module gets config through get_settings() and stays
 testable (no hidden env lookups scattered through the codebase).
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import quote_plus
 
@@ -33,6 +34,32 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
 
     redis_url: str
+
+    gamma_api_base: str = "https://gamma-api.polymarket.com"
+    data_api_base: str = "https://data-api.polymarket.com"
+
+    http_timeout_seconds: float = 15.0
+    http_max_concurrency: int = 6
+
+    # Collector polling cadence. Deliberately far below the documented
+    # Polymarket rate limits (gamma /markets 300 req/10s, data /trades
+    # 200 req/10s, data /positions 150 req/10s - see docs/API_REFERENCE.md) -
+    # one request every 120-3600s per collector, single-digit concurrency, is
+    # nowhere near those ceilings even with multiple collectors running
+    # together.
+    leaderboard_time_periods: str = "MONTH,ALL"
+    leaderboard_category: str = "OVERALL"
+    leaderboard_top_n: int = 100
+    tracked_wallets_limit: int = 50
+    positions_size_threshold: Decimal = Decimal("1.0")
+    leaderboard_interval_seconds: int = 3600
+    positions_interval_seconds: int = 120
+    markets_interval_seconds: int = 600
+
+    @property
+    def leaderboard_periods(self) -> list[str]:
+        """leaderboard_time_periods split into a list, e.g. ["MONTH", "ALL"]."""
+        return [p.strip() for p in self.leaderboard_time_periods.split(",") if p.strip()]
 
     @property
     def database_url(self) -> str:
