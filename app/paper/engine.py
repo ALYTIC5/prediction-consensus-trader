@@ -48,6 +48,17 @@ class ExitReason(StrEnum):
     SIGNAL_EXPIRED = "signal_expired"
 
 
+class RejectionStage(StrEnum):
+    """Stage at which a paper trade candidate was rejected, stored in
+    paper_trades.rejection_reason so the dashboard can group rejections
+    by stage in per-portfolio signal funnels.
+    """
+
+    ENTRY_FILTER = "ENTRY_FILTER"
+    SIZING = "SIZING"
+    FILL = "FILL"
+
+
 class ResolutionOutcome(StrEnum):
     """See docs/PHASE4_DESIGN.md section 5 - the fallback price-inference
     rule and its documented failure mode.
@@ -99,23 +110,25 @@ class ExitConfig:
     exit_on_signal_expiry_hours: int
 
 
-def passes_entry_filters(signal: SignalMetrics, market: MarketMetrics, filters: EntryFilters) -> bool:
-    """A signal that fails this gets no paper_trades row at all - it's
-    simply not considered yet, and is re-checked next cycle (see
-    docs/PHASE4_DESIGN.md flag 3). market.closed isn't checked here - that's
-    a separate concern handled by the caller before this is even called.
+def passes_entry_filters(
+    signal: SignalMetrics, market: MarketMetrics, filters: EntryFilters
+) -> tuple[bool, str | None]:
+    """Returns (passed, reason). When passed is False, reason is the name of
+    the filter that rejected the signal so it can be stored in the MISSED
+    row's exit_reason. market.closed isn't checked here - that's a separate
+    concern handled by the caller before this is even called.
     """
     if signal.distinct_traders < filters.min_traders:
-        return False
+        return False, "BELOW_MIN_TRADERS"
     if signal.weighted_score < filters.min_weighted_score:
-        return False
+        return False, "BELOW_MIN_SCORE"
     if signal.combined_entry_value < filters.min_combined_value_usd:
-        return False
+        return False, "BELOW_MIN_VALUE"
     if market.liquidity is None or market.liquidity < filters.min_liquidity_usd:
-        return False
+        return False, "BELOW_MIN_LIQUIDITY"
     if market.spread is None or market.spread > filters.max_spread:
-        return False
-    return True
+        return False, "ABOVE_MAX_SPREAD"
+    return True, None
 
 
 def detect_resolution(
@@ -225,7 +238,9 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
         sizing_rule=g(params, "paper_sizing_rule", settings.paper_sizing_rule),
         fixed_fraction_pct=g(params, "paper_fixed_fraction_pct", settings.paper_fixed_fraction_pct),
         confidence_base_fraction_pct=g(
-            params, "paper_confidence_base_fraction_pct", settings.paper_confidence_base_fraction_pct
+            params,
+            "paper_confidence_base_fraction_pct",
+            settings.paper_confidence_base_fraction_pct,
         ),
         confidence_reference_score=g(
             params, "paper_confidence_reference_score", settings.paper_confidence_reference_score
@@ -247,7 +262,9 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
         ),
     )
     fill = FillConfig(
-        entry_delay_seconds=g(params, "paper_entry_delay_seconds", settings.paper_entry_delay_seconds),
+        entry_delay_seconds=g(
+            params, "paper_entry_delay_seconds", settings.paper_entry_delay_seconds
+        ),
         slippage_k=g(params, "paper_slippage_k", settings.paper_slippage_k),
         slippage_max=g(params, "paper_slippage_max", settings.paper_slippage_max),
         no_delayed_snapshot_penalty=g(
@@ -354,15 +371,11 @@ def _run_entries(
         .all()
     )
     already_decided = set(
-        session.execute(
-            select(PaperTrade.signal_id).where(PaperTrade.portfolio_id == portfolio.id)
-        )
+        session.execute(select(PaperTrade.signal_id).where(PaperTrade.portfolio_id == portfolio.id))
         .scalars()
         .all()
     )
-    undecided_ids = set(
-        select_undecided_signals([s.id for s in candidates], already_decided)
-    )
+    undecided_ids = set(select_undecided_signals([s.id for s in candidates], already_decided))
     undecided = [s for s in candidates if s.id in undecided_ids]
 
     current_exposure = session.execute(
@@ -377,16 +390,56 @@ def _run_entries(
             select(Market).where(Market.condition_id == signal.condition_id)
         ).scalar_one_or_none()
 
-        if market is None or market.closed or not passes_entry_filters(
+        if market is None or market.closed:
+            if market is None:
+                session.add(
+                    PaperTrade(
+                        portfolio_id=portfolio.id,
+                        signal_id=signal.id,
+                        condition_id=signal.condition_id,
+                        asset=signal.asset,
+                        outcome=signal.outcome,
+                        status=PaperTradeStatus.MISSED,
+                        signal_price=signal.average_entry_price,
+                        exit_reason="MARKET_NOT_FOUND",
+                        rejection_reason=RejectionStage.ENTRY_FILTER,
+                        exit_at=now,
+                    )
+                )
+            continue
+
+        passed, filter_reason = passes_entry_filters(
             SignalMetrics(
                 distinct_traders=signal.distinct_traders,
                 weighted_score=signal.weighted_score,
                 combined_entry_value=signal.combined_entry_value,
             ),
-            MarketMetrics(liquidity=market.liquidity if market else None, spread=market.spread if market else None, closed=market.closed if market else True),
+            MarketMetrics(
+                liquidity=market.liquidity,
+                spread=market.spread,
+                closed=market.closed,
+            ),
             config.entry_filters,
-        ):
-            continue  # no row - reconsidered next cycle, see flag 3
+        )
+        if not passed:
+            session.add(
+                PaperTrade(
+                    portfolio_id=portfolio.id,
+                    signal_id=signal.id,
+                    condition_id=signal.condition_id,
+                    asset=signal.asset,
+                    outcome=signal.outcome,
+                    status=PaperTradeStatus.MISSED,
+                    signal_price=signal.average_entry_price,
+                    exit_reason=filter_reason,
+                    rejection_reason=RejectionStage.ENTRY_FILTER,
+                    exit_at=now,
+                )
+            )
+            lines.append(
+                f"paper[{portfolio.name}]: missed signal {signal.id} entry_filter={filter_reason}"
+            )
+            continue
 
         sizing_result = size_position(
             SizingRequest(
@@ -407,6 +460,7 @@ def _run_entries(
                     status=PaperTradeStatus.MISSED,
                     signal_price=signal.average_entry_price,
                     exit_reason=sizing_result.skipped_reason,
+                    rejection_reason=RejectionStage.SIZING,
                     exit_at=now,
                 )
             )
@@ -439,10 +493,13 @@ def _run_entries(
                     status=PaperTradeStatus.MISSED,
                     signal_price=signal.average_entry_price,
                     exit_reason=fill_result.reason,
+                    rejection_reason=RejectionStage.FILL,
                     exit_at=now,
                 )
             )
-            lines.append(f"paper[{portfolio.name}]: missed signal {signal.id} reason={fill_result.reason}")
+            lines.append(
+                f"paper[{portfolio.name}]: missed signal {signal.id} reason={fill_result.reason}"
+            )
             continue
 
         size = sizing_result.target_notional / fill_result.fill_price
@@ -505,7 +562,9 @@ def _run_exits(
             select(Market).where(Market.condition_id == trade.condition_id)
         ).scalar_one_or_none()
         closed = market.closed if market is not None else False
-        resolution_price = _latest_price(session, trade.condition_id, trade.asset) if closed else None
+        resolution_price = (
+            _latest_price(session, trade.condition_id, trade.asset) if closed else None
+        )
         resolution = detect_resolution(closed, resolution_price, config.resolution_price_threshold)
 
         if resolution == ResolutionOutcome.AMBIGUOUS:
@@ -553,7 +612,9 @@ def _run_exits(
     return lines
 
 
-def _run_portfolio_cycle(session: Session, portfolio: PaperPortfolio, settings: Settings, now: datetime) -> _CycleLog:
+def _run_portfolio_cycle(
+    session: Session, portfolio: PaperPortfolio, settings: Settings, now: datetime
+) -> _CycleLog:
     config = resolve_portfolio_config(portfolio.params, settings)
 
     entry_lines = _run_entries(session, portfolio, config, now)

@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+
+{% block title %}{{ portfolio.name }} - Paper Trading - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="page-head">
+  <div class="page-head__title">{{ portfolio.name }}</div>
+  <div class="page-head__meta">
+    <span class="micro-label">Bankroll</span>
+    <span class="num">{{ "%.2f"|format(metrics.current_bankroll if metrics else portfolio.starting_bankroll) }}</span>
+    <span class="micro-label" style="margin-left:var(--space-3);">Today</span>
+    <span class="num {% if today_pnl > 0 %}text-phosphor{% elif today_pnl < 0 %}text-alert{% endif %}">{{ "%.2f"|format(today_pnl) }}</span>
+  </div>
+</div>
+
+{% if metrics %}
+
+<div class="summary-strip">
+  <div class="summary-card">
+    <span class="micro-label">Realised P&L</span>
+    <span class="summary-card__value {% if metrics.total_realized_pnl > 0 %}text-phosphor{% elif metrics.total_realized_pnl < 0 %}text-alert{% endif %}">{{ "%.2f"|format(metrics.total_realized_pnl) }}</span>
+  </div>
+  <div class="summary-card">
+    <span class="micro-label">Unrealised P&L</span>
+    <span class="summary-card__value {% if metrics.unrealized_pnl > 0 %}text-phosphor{% elif metrics.unrealized_pnl < 0 %}text-alert{% endif %}">{{ "%.2f"|format(metrics.unrealized_pnl) }}</span>
+  </div>
+  <div class="summary-card">
+    <span class="micro-label">ROI</span>
+    <span class="summary-card__value {% if metrics.roi_pct is not none and metrics.roi_pct > 0 %}text-phosphor{% elif metrics.roi_pct is not none and metrics.roi_pct < 0 %}text-alert{% endif %}">
+      {% if metrics.roi_pct is not none %}{{ "%.2f"|format(metrics.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}
+    </span>
+  </div>
+  <div class="summary-card">
+    <span class="micro-label">Win Rate</span>
+    <span class="summary-card__value">{% if metrics.win_rate is not none %}{{ "%.1f"|format(metrics.win_rate * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</span>
+  </div>
+  <div class="summary-card">
+    <span class="micro-label">Profit Factor</span>
+    <span class="summary-card__value">{% if metrics.profit_factor is not none %}{{ "%.2f"|format(metrics.profit_factor) }}{% else %}<span class="text-dim">—</span>{% endif %}</span>
+  </div>
+  <div class="summary-card">
+    <span class="micro-label">Max DD</span>
+    <span class="summary-card__value text-alert">{% if metrics.max_drawdown_pct is not none %}{{ "%.2f"|format(metrics.max_drawdown_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</span>
+  </div>
+  <div class="summary-card">
+    <span class="micro-label">Sharpe</span>
+    <span class="summary-card__value">{% if metrics.sharpe is not none %}{{ "%.2f"|format(metrics.sharpe) }}{% else %}<span class="text-dim">—</span>{% endif %}</span>
+  </div>
+</div>
+
+{% if metrics.insufficient_sample_note %}
+<p class="text-dim micro-label" style="margin-bottom:var(--space-4);">{{ metrics.insufficient_sample_note }} — ratio-shaped statistics suppressed.</p>
+{% endif %}
+
+<div class="detail-grid">
+  <div class="panel detail-grid__chart">
+    <div class="panel__title"><span>Equity Curve</span></div>
+    <div class="chart-wrap" style="height:280px;">
+      <canvas id="equity-chart"
+              data-chart-json="{{ equity_chart_json | tojson | safe }}"
+              style="width:100%; height:100%;">
+      </canvas>
+    </div>
+    {% if not equity_curve %}
+    <p class="empty-state" style="margin-top:var(--space-3);">No closed trades yet — equity curve will appear here as trades exit.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel detail-grid__stats">
+    <div class="panel__title"><span>Trade Statistics</span></div>
+    <table class="data-table">
+      <tbody>
+        <tr><td class="micro-label">Closed</td><td class="num">{{ metrics.closed_count }}</td></tr>
+        <tr><td class="micro-label">Open</td><td class="num">{{ metrics.open_count }}</td></tr>
+        <tr><td class="micro-label">Missed</td><td class="num text-dim">{{ missed_count }}</td></tr>
+        <tr><td class="micro-label">Avg Hold</td><td class="num">{% if trade_stats.avg_hold_duration_hours is not none %}{{ "%.1f"|format(trade_stats.avg_hold_duration_hours) }}h{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Biggest Win</td><td class="num text-phosphor">{% if trade_stats.biggest_winner is not none %}{{ "%.2f"|format(trade_stats.biggest_winner) }}{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Biggest Loss</td><td class="num text-alert">{% if trade_stats.biggest_loser is not none %}{{ "%.2f"|format(trade_stats.biggest_loser) }}{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Win Streak</td><td class="num text-phosphor">{{ trade_stats.max_win_streak }}</td></tr>
+        <tr><td class="micro-label">Lose Streak</td><td class="num text-alert">{{ trade_stats.max_lose_streak }}</td></tr>
+        <tr><td class="micro-label">Avg Win</td><td class="num text-phosphor">{% if metrics.avg_win is not none %}{{ "%.4f"|format(metrics.avg_win) }}{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Avg Loss</td><td class="num text-alert">{% if metrics.avg_loss is not none %}{{ "%.4f"|format(metrics.avg_loss) }}{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Signal Funnel</span></div>
+  {% if funnel and funnel.total_evaluated > 0 %}
+  {% set max_funnel = [funnel.entry_filter_rejected, funnel.sizing_rejected, funnel.fill_rejected, funnel.entered, funnel.closed] | max %}
+  {% set funnel_max = max_funnel if max_funnel > 0 else 1 %}
+  <div class="funnel-horizontal">
+    <div class="funnel-bar">
+      <span class="funnel-bar__label micro-label">Entry Rejected</span>
+      <span class="funnel-bar__track"><span class="funnel-bar__fill funnel-bar__fill--alert" style="width:{{ (funnel.entry_filter_rejected / funnel_max * 100) | round(1) }}%"></span></span>
+      <span class="funnel-bar__count">{{ funnel.entry_filter_rejected }}</span>
+    </div>
+    <div class="funnel-bar">
+      <span class="funnel-bar__label micro-label">Sizing Rejected</span>
+      <span class="funnel-bar__track"><span class="funnel-bar__fill funnel-bar__fill--amber" style="width:{{ (funnel.sizing_rejected / funnel_max * 100) | round(1) }}%"></span></span>
+      <span class="funnel-bar__count">{{ funnel.sizing_rejected }}</span>
+    </div>
+    <div class="funnel-bar">
+      <span class="funnel-bar__label micro-label">Fill Rejected</span>
+      <span class="funnel-bar__track"><span class="funnel-bar__fill funnel-bar__fill--amber" style="width:{{ (funnel.fill_rejected / funnel_max * 100) | round(1) }}%"></span></span>
+      <span class="funnel-bar__count">{{ funnel.fill_rejected }}</span>
+    </div>
+    <div class="funnel-bar">
+      <span class="funnel-bar__label micro-label">Open</span>
+      <span class="funnel-bar__track"><span class="funnel-bar__fill funnel-bar__fill--phosphor" style="width:{{ (funnel.entered / funnel_max * 100) | round(1) }}%"></span></span>
+      <span class="funnel-bar__count">{{ funnel.entered }}</span>
+    </div>
+    <div class="funnel-bar">
+      <span class="funnel-bar__label micro-label">Closed</span>
+      <span class="funnel-bar__track"><span class="funnel-bar__fill funnel-bar__fill--dim" style="width:{{ (funnel.closed / funnel_max * 100) | round(1) }}%"></span></span>
+      <span class="funnel-bar__count">{{ funnel.closed }}</span>
+    </div>
+  </div>
+  {% else %}
+  <p class="empty-state">No signals evaluated yet — funnel will appear here once the paper engine runs.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Trades</span></div>
+
+  <div class="status-filter">
+    <button class="status-filter__btn active"
+            hx-get="/fragments/paper-trades/{{ portfolio.id }}?status=all"
+            hx-target="#paper-detail-trades"
+            hx-swap="innerHTML">All</button>
+    <button class="status-filter__btn"
+            hx-get="/fragments/paper-trades/{{ portfolio.id }}?status=OPEN"
+            hx-target="#paper-detail-trades"
+            hx-swap="innerHTML">Open</button>
+    <button class="status-filter__btn"
+            hx-get="/fragments/paper-trades/{{ portfolio.id }}?status=CLOSED"
+            hx-target="#paper-detail-trades"
+            hx-swap="innerHTML">Closed</button>
+    <button class="status-filter__btn"
+            hx-get="/fragments/paper-trades/{{ portfolio.id }}?status=MISSED"
+            hx-target="#paper-detail-trades"
+            hx-swap="innerHTML">Missed</button>
+  </div>
+
+  <div id="paper-detail-trades">
+    {% include "_paper_trades.html" %}
+  </div>
+</div>
+
+{% else %}
+<p class="empty-state">Portfolio not found.</p>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var canvas = document.getElementById('equity-chart');
+  if (!canvas) return;
+  var raw = canvas.getAttribute('data-chart-json');
+  if (!raw) return;
+  try {
+    var data = JSON.parse(raw);
+    if (!data.labels || data.labels.length === 0) return;
+    new Chart(canvas, {
+      type: 'line',
+      data: data,
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 300 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: true,
+            backgroundColor: '#10141d',
+            titleFont: { family: 'IBM Plex Mono', size: 11 },
+            bodyFont: { family: 'IBM Plex Mono', size: 12 },
+            titleColor: '#8a93a6',
+            bodyColor: '#e6edf3',
+            borderColor: '#1c2230',
+            borderWidth: 1,
+            padding: 8
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: '#1C2230' },
+            ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6', maxTicksLimit: 8 }
+          },
+          y: {
+            grid: { color: '#1C2230' },
+            ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+          }
+        }
+      }
+    });
+  } catch(e) {}
+})();
+</script>
+{% endblock %}

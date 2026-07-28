@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Comparison - Paper Trading - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Strategy Comparison</span>
+    {% if comparison and comparison|selectattr("insufficient")|list|length > 0 %}
+    <span class="text-dim" style="font-weight:400; font-size:12px;">Some portfolios have fewer than {{ paper_min_trades_for_stats }} closed trades</span>
+    {% endif %}
+  </div>
+
+  {% if comparison %}
+  <div class="data-table-wrap">
+    <table class="data-table sortable-table" id="comparison-table">
+      <thead>
+        <tr>
+          <th data-sort="string" class="sortable-th sort-active sort-asc">Strategy</th>
+          <th data-sort="number" class="sortable-th">ROI</th>
+          <th data-sort="number" class="sortable-th">Win Rate</th>
+          <th data-sort="number" class="sortable-th">Profit Factor</th>
+          <th data-sort="number" class="sortable-th">Max DD</th>
+          <th data-sort="number" class="sortable-th">Trades</th>
+          <th data-sort="number" class="sortable-th">Open</th>
+          <th data-sort="number" class="sortable-th">P&L</th>
+          <th data-sort="number" class="sortable-th">Avg Return</th>
+          <th data-sort="number" class="sortable-th">Sharpe</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for comp in comparison %}
+        <tr>
+          <td><a href="/paper/{{ comp.portfolio_id }}" class="strategy-link">{{ comp.name }}</a></td>
+          <td class="num {% if comp.roi_pct is not none and comp.roi_pct > 0 %}text-phosphor{% elif comp.roi_pct is not none and comp.roi_pct < 0 %}text-alert{% endif %}">
+            {% if comp.roi_pct is not none %}{{ "%.2f"|format(comp.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num">{% if comp.win_rate is not none %}{{ "%.1f"|format(comp.win_rate * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td>
+          <td class="num">{% if comp.profit_factor is not none %}{{ "%.2f"|format(comp.profit_factor) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
+          <td class="num text-alert">{% if comp.max_drawdown_pct is not none %}{{ "%.2f"|format(comp.max_drawdown_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td>
+          <td class="num">{{ comp.closed_count }}</td>
+          <td class="num">{{ comp.open_count }}</td>
+          <td class="num {% if comp.total_realized_pnl is not none and comp.total_realized_pnl > 0 %}text-phosphor{% elif comp.total_realized_pnl is not none and comp.total_realized_pnl < 0 %}text-alert{% endif %}">
+            {% if comp.total_realized_pnl is not none %}{{ "%.2f"|format(comp.total_realized_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num {% if comp.avg_return is not none and comp.avg_return > 0 %}text-phosphor{% elif comp.avg_return is not none and comp.avg_return < 0 %}text-alert{% endif %}">
+            {% if comp.avg_return is not none %}{{ "%.4f"|format(comp.avg_return) }}{% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num">{% if comp.profit_factor is not none %}{{ "%.2f"|format(comp.profit_factor) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No portfolios to compare.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var table = document.getElementById('comparison-table');
+  if (!table) return;
+
+  table.querySelectorAll('.sortable-th').forEach(function(th) {
+    th.addEventListener('click', function() {
+      var sortType = th.getAttribute('data-sort') || 'string';
+      var isActive = th.classList.contains('sort-active');
+      var isDesc = th.classList.contains('sort-desc');
+
+      table.querySelectorAll('.sortable-th').forEach(function(h) {
+        h.classList.remove('sort-active', 'sort-asc', 'sort-desc');
+      });
+
+      th.classList.add('sort-active');
+      if (isActive && isDesc) {
+        th.classList.add('sort-asc');
+      } else {
+        th.classList.add('sort-desc');
+      }
+
+      var tbody = table.querySelector('tbody');
+      var rows = Array.from(tbody.querySelectorAll('tr'));
+      var colIndex = Array.from(th.parentNode.children).indexOf(th);
+      var ascending = th.classList.contains('sort-asc');
+
+      rows.sort(function(a, b) {
+        var aVal = a.children[colIndex].textContent.trim();
+        var bVal = b.children[colIndex].textContent.trim();
+        if (sortType === 'number') {
+          var aNum = parseFloat(aVal.replace(/[^0-9.\-]/g, '')) || 0;
+          var bNum = parseFloat(bVal.replace(/[^0-9.\-]/g, '')) || 0;
+          return ascending ? aNum - bNum : bNum - aNum;
+        }
+        return ascending ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+      });
+
+      rows.forEach(function(row) { tbody.appendChild(row); });
+    });
+  });
+})();
+</script>
+{% endblock %}

@@ -86,3 +86,8 @@ class PaperTrade(Base):
     realized_pnl: Mapped[Decimal | None] = mapped_column(Money)
     exit_reason: Mapped[str | None] = mapped_column(String(64))
     exit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Categorises why a MISSED trade was rejected: ENTRY_FILTER, SIZING, or
+    # FILL. NULL for OPEN/CLOSED trades. Populated alongside exit_reason
+    # which carries the specific reason within that category.
+    rejection_reason: Mapped[str | None] = mapped_column(String(32))

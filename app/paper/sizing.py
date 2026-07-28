@@ -101,6 +101,8 @@ def size_position(request: SizingRequest, config: SizingConfig) -> SizingResult:
     target = min(target, headroom)
 
     if target < config.min_position_notional_usd:
-        return SizingResult(target_notional=None, skipped_reason=SizingSkipReason.BELOW_MIN_NOTIONAL)
+        return SizingResult(
+            target_notional=None, skipped_reason=SizingSkipReason.BELOW_MIN_NOTIONAL
+        )
 
     return SizingResult(target_notional=target, skipped_reason=None)

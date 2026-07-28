@@ -188,8 +188,8 @@ exactly as much as the trades that happened (spec section 4a).
 class FillResult:
     filled: bool
     fill_price: Decimal | None
-    slippage_paid: Decimal | None   # penalty actually applied, for reporting
-    reason: str                     # "filled" | "missed_price_drift" | "no_market_price"
+    slippage_paid: Decimal | None  # penalty actually applied, for reporting
+    reason: str  # "filled" | "missed_price_drift" | "no_market_price"
 ```
 `reason="no_market_price"` covers the case where the market has no ask at
 all (e.g. `best_ask` is null) - fail closed, never fabricate a price.

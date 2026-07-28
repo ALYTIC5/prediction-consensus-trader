@@ -331,37 +331,65 @@ def tuning_reset(request: Request, key: str):
     return templates.TemplateResponse(request, "_tuning_row.html", context)
 
 
-# --- Paper trading page ---
+# --- Paper trading pages ---
 
 
 @app.get("/paper")
-def paper_page(request: Request):
-    """The Paper page: comparison strip, portfolio selector, equity curve,
-    full metrics, and trades table for the selected portfolio.
-    """
+def paper_overview_page(request: Request):
+    """Paper Trading overview: stats bar, top performers, and leaderboard."""
     settings = get_settings()
     portfolios = queries.list_portfolios()
     comparison = queries.get_comparison_data() if portfolios else []
+    stats = queries.overview_stats() if portfolios else None
 
-    selected_id = request.query_params.get("portfolio")
-    if selected_id:
-        selected_id = int(selected_id)
-    else:
-        selected_id = next(
-            (p.id for p in portfolios if p.is_active),
-            portfolios[0].id if portfolios else None,
-        )
+    top_performers = sorted(
+        [c for c in comparison if c.roi_pct is not None],
+        key=lambda c: c.roi_pct,
+        reverse=True,
+    )[:3]
 
-    if selected_id is not None:
-        metrics = queries.portfolio_metrics_from_db(selected_id)
-        trades = queries.list_portfolio_trades(selected_id)
-        equity_curve = queries.equity_curve_points(selected_id)
-        missed_count = queries.get_missed_count(selected_id)
-    else:
-        metrics = None
-        trades = []
-        equity_curve = []
-        missed_count = 0
+    context = {
+        "active_page": "paper_overview",
+        "environment": settings.environment,
+        "stats": stats,
+        "top_performers": top_performers,
+        "comparison": comparison,
+        "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
+    }
+    return templates.TemplateResponse(request, "paper_overview.html", context)
+
+
+@app.get("/paper/comparison")
+def paper_comparison_page(request: Request):
+    """Side-by-side comparison of all strategies."""
+    settings = get_settings()
+    comparison = queries.get_comparison_data()
+    context = {
+        "active_page": "paper_comparison",
+        "environment": settings.environment,
+        "comparison": comparison,
+        "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
+    }
+    return templates.TemplateResponse(request, "paper_comparison.html", context)
+
+
+@app.get("/paper/{portfolio_id}")
+def paper_detail_page(request: Request, portfolio_id: int):
+    """One strategy's full detail: summary cards, equity chart, trades,
+    signal funnel, and trade statistics.
+    """
+    settings = get_settings()
+    portfolio = next((p for p in queries.list_portfolios() if p.id == portfolio_id), None)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="portfolio not found")
+
+    metrics = queries.portfolio_metrics_from_db(portfolio_id)
+    trades = queries.list_portfolio_trades(portfolio_id)
+    equity_curve = queries.equity_curve_points(portfolio_id)
+    missed_count = queries.get_missed_count(portfolio_id)
+    funnel = queries.portfolio_signal_funnel(portfolio_id)
+    today_pnl = queries.today_return(portfolio_id)
+    trade_stats = queries.trade_statistics(portfolio_id)
 
     equity_labels = [p.exit_at.strftime("%b %d %H:%M") for p in equity_curve]
     equity_data = [float(p.equity) for p in equity_curve]
@@ -382,57 +410,20 @@ def paper_page(request: Request):
     }
 
     context = {
-        "active_page": "paper",
+        "active_page": "paper_detail",
         "environment": settings.environment,
-        "portfolios": portfolios,
-        "comparison": comparison,
-        "selected_id": selected_id,
+        "portfolio": portfolio,
         "metrics": metrics,
         "trades": trades,
         "missed_count": missed_count,
         "equity_curve": equity_curve,
         "equity_chart_json": equity_chart_json,
+        "funnel": funnel,
+        "today_pnl": today_pnl,
+        "trade_stats": trade_stats,
         "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
     }
-    return templates.TemplateResponse(request, "paper.html", context)
-
-
-@app.get("/fragments/paper-content/{portfolio_id}")
-def paper_content_fragment(request: Request, portfolio_id: int):
-    """htmx fragment: one portfolio's metrics, equity chart data, and
-    trades table - swapped in when the user selects a different portfolio.
-    """
-    metrics = queries.portfolio_metrics_from_db(portfolio_id)
-    trades = queries.list_portfolio_trades(portfolio_id)
-    equity_curve = queries.equity_curve_points(portfolio_id)
-    missed_count = queries.get_missed_count(portfolio_id)
-
-    equity_labels = [p.exit_at.strftime("%b %d %H:%M") for p in equity_curve]
-    equity_data = [float(p.equity) for p in equity_curve]
-    equity_chart_json = {
-        "labels": equity_labels,
-        "datasets": [
-            {
-                "label": "Equity",
-                "data": equity_data,
-                "borderColor": "#5CF2C7",
-                "backgroundColor": "rgba(92, 242, 199, 0.1)",
-                "fill": True,
-                "tension": 0,
-                "pointRadius": 0,
-                "borderWidth": 1.5,
-            }
-        ],
-    }
-
-    context = {
-        "portfolio_id": portfolio_id,
-        "metrics": metrics,
-        "trades": trades,
-        "missed_count": missed_count,
-        "equity_chart_json": equity_chart_json,
-    }
-    return templates.TemplateResponse(request, "_paper_content.html", context)
+    return templates.TemplateResponse(request, "paper_detail.html", context)
 
 
 @app.get("/fragments/paper-trades/{portfolio_id}")

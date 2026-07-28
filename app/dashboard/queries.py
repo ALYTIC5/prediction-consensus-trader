@@ -912,10 +912,43 @@ class PaperComparisonRow:
     portfolio_id: int
     name: str
     roi_pct: Decimal | None
+    win_rate: Decimal | None
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
     closed_count: int
+    open_count: int
+    total_realized_pnl: Decimal | None
+    avg_return: Decimal | None
     insufficient: bool
+
+
+@dataclass(frozen=True)
+class PaperOverviewStats:
+    total_strategies: int
+    active_trades: int
+    total_capital: Decimal
+    total_realized_pnl: Decimal
+    total_unrealized_pnl: Decimal
+    avg_win_rate: Decimal | None
+
+
+@dataclass(frozen=True)
+class PortfolioSignalFunnel:
+    entry_filter_rejected: int
+    sizing_rejected: int
+    fill_rejected: int
+    entered: int
+    closed: int
+    total_evaluated: int
+
+
+@dataclass(frozen=True)
+class TradeStatistics:
+    avg_hold_duration_hours: float | None
+    biggest_winner: Decimal | None
+    biggest_loser: Decimal | None
+    max_win_streak: int
+    max_lose_streak: int
 
 
 def list_portfolios() -> list[PaperPortfolioRow]:
@@ -1042,14 +1075,20 @@ def get_comparison_data() -> list[PaperComparisonRow]:
         metrics = portfolio_metrics_from_db(p.id)
         if metrics is None:
             continue
+        closed = metrics.closed_count
+        avg_return = (metrics.total_realized_pnl / Decimal(str(closed))) if closed > 0 else None
         comparison.append(
             PaperComparisonRow(
                 portfolio_id=p.id,
                 name=p.name,
                 roi_pct=metrics.roi_pct,
+                win_rate=metrics.win_rate,
                 profit_factor=metrics.profit_factor,
                 max_drawdown_pct=metrics.max_drawdown_pct,
                 closed_count=metrics.closed_count,
+                open_count=metrics.open_count,
+                total_realized_pnl=metrics.total_realized_pnl,
+                avg_return=avg_return,
                 insufficient=metrics.insufficient_sample_note is not None,
             )
         )
@@ -1063,3 +1102,152 @@ def get_missed_count(portfolio_id: int) -> int:
             .select_from(PaperTrade)
             .where(PaperTrade.portfolio_id == portfolio_id, PaperTrade.status == "MISSED")
         ).scalar_one()
+
+
+def overview_stats() -> PaperOverviewStats:
+    """Aggregate across all active portfolios - total strategies, active
+    trades, total capital, total realized/unrealized PnL, and average win
+    rate (weighted by closed trade count).
+    """
+    portfolios = list_portfolios()
+    active_trades = 0
+    total_capital = Decimal("0")
+    total_realized = Decimal("0")
+    total_unrealized = Decimal("0")
+    weighted_win_rate = Decimal("0")
+    total_closed = 0
+
+    for p in portfolios:
+        metrics = portfolio_metrics_from_db(p.id)
+        if metrics is None:
+            continue
+        active_trades += metrics.open_count
+        total_capital += metrics.current_bankroll
+        total_realized += metrics.total_realized_pnl
+        total_unrealized += metrics.unrealized_pnl
+        if metrics.win_rate is not None and metrics.closed_count > 0:
+            weighted_win_rate += metrics.win_rate * Decimal(str(metrics.closed_count))
+            total_closed += metrics.closed_count
+
+    avg_win_rate = (weighted_win_rate / Decimal(str(total_closed))) if total_closed > 0 else None
+
+    return PaperOverviewStats(
+        total_strategies=len(portfolios),
+        active_trades=active_trades,
+        total_capital=total_capital,
+        total_realized_pnl=total_realized,
+        total_unrealized_pnl=total_unrealized,
+        avg_win_rate=avg_win_rate,
+    )
+
+
+def portfolio_signal_funnel(portfolio_id: int) -> PortfolioSignalFunnel:
+    """Per-portfolio breakdown of signal decisions by rejection stage."""
+    with db_session() as session:
+        all_rows = session.execute(
+            select(PaperTrade.status, PaperTrade.rejection_reason).where(
+                PaperTrade.portfolio_id == portfolio_id
+            )
+        ).all()
+
+    entry_filter = 0
+    sizing = 0
+    fill = 0
+    entered = 0
+    closed = 0
+
+    for status, rejection_reason in all_rows:
+        if status == "CLOSED":
+            closed += 1
+        elif status == "OPEN":
+            entered += 1
+        elif status == "MISSED":
+            if rejection_reason == "ENTRY_FILTER":
+                entry_filter += 1
+            elif rejection_reason == "SIZING":
+                sizing += 1
+            elif rejection_reason == "FILL":
+                fill += 1
+
+    total = entry_filter + sizing + fill + entered + closed
+    return PortfolioSignalFunnel(
+        entry_filter_rejected=entry_filter,
+        sizing_rejected=sizing,
+        fill_rejected=fill,
+        entered=entered,
+        closed=closed,
+        total_evaluated=total,
+    )
+
+
+def today_return(portfolio_id: int) -> Decimal:
+    """Realized PnL from trades exited since midnight UTC today."""
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    with db_session() as session:
+        result = session.execute(
+            select(func.coalesce(func.sum(PaperTrade.realized_pnl), Decimal("0"))).where(
+                PaperTrade.portfolio_id == portfolio_id,
+                PaperTrade.status == "CLOSED",
+                PaperTrade.exit_at >= today_start,
+                PaperTrade.realized_pnl.isnot(None),
+            )
+        ).scalar_one()
+    return result
+
+
+def trade_statistics(portfolio_id: int) -> TradeStatistics:
+    """Additional trade-level statistics not covered by PortfolioMetrics."""
+    with db_session() as session:
+        trades = (
+            session.execute(
+                select(PaperTrade).where(
+                    PaperTrade.portfolio_id == portfolio_id,
+                    PaperTrade.status == "CLOSED",
+                    PaperTrade.entry_at.isnot(None),
+                    PaperTrade.exit_at.isnot(None),
+                    PaperTrade.realized_pnl.isnot(None),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    if not trades:
+        return TradeStatistics(
+            avg_hold_duration_hours=None,
+            biggest_winner=None,
+            biggest_loser=None,
+            max_win_streak=0,
+            max_lose_streak=0,
+        )
+
+    durations = [
+        (t.exit_at - t.entry_at).total_seconds() / 3600
+        for t in trades
+        if t.entry_at is not None and t.exit_at is not None
+    ]
+    avg_duration = (sum(durations) / len(durations)) if durations else None
+
+    pnls = [t.realized_pnl for t in trades if t.realized_pnl is not None]
+    biggest_winner = max(pnls) if pnls else None
+    biggest_loser = min(pnls) if pnls else None
+
+    # Win/loss streaks
+    max_win = max_lose = current_win = current_lose = 0
+    for t in sorted(trades, key=lambda x: x.exit_at or datetime.min.replace(tzinfo=UTC)):
+        if t.realized_pnl is not None and t.realized_pnl > 0:
+            current_win += 1
+            current_lose = 0
+            max_win = max(max_win, current_win)
+        else:
+            current_lose += 1
+            current_win = 0
+            max_lose = max(max_lose, current_lose)
+
+    return TradeStatistics(
+        avg_hold_duration_hours=avg_duration,
+        biggest_winner=biggest_winner,
+        biggest_loser=biggest_loser,
+        max_win_streak=max_win,
+        max_lose_streak=max_lose,
+    )

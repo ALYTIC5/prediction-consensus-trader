@@ -169,6 +169,21 @@ p {
   background: rgba(92, 242, 199, 0.06);
 }
 
+.nav__section {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+  padding: var(--space-4) var(--space-4) var(--space-1);
+  opacity: 0.6;
+}
+
+.nav__link--sub {
+  padding-left: calc(var(--space-4) + var(--space-3));
+  font-size: 12px;
+}
+
 .main {
   grid-area: main;
   padding: var(--space-5);
@@ -764,6 +779,219 @@ button.button--quiet:hover {
   max-height: 600px;
   overflow-y: auto;
   margin: 0;
+}
+
+/* --- Page head (detail page) --- */
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+}
+
+.page-head__title {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.page-head__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* --- Summary strip (detail page) --- */
+
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.summary-card {
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+.summary-card__value {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  margin-top: var(--space-1);
+}
+
+/* --- Detail grid: chart + statistics side by side --- */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.detail-grid__chart {
+  min-height: 0;
+}
+
+.detail-grid__stats {
+  min-height: 0;
+}
+
+/* --- Top performers (overview page) --- */
+
+.top-performers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
+}
+
+.performer-card {
+  display: block;
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 150ms ease;
+}
+
+.performer-card:hover {
+  border-color: var(--phosphor);
+  text-decoration: none;
+}
+
+.performer-card__name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+  color: var(--phosphor);
+}
+
+.performer-card__stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  padding: var(--space-1) 0;
+}
+
+.performer-card__stat .micro-label {
+  display: inline;
+}
+
+/* --- Sortable table --- */
+
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-th:hover {
+  color: var(--text);
+}
+
+.sort-active {
+  color: var(--phosphor) !important;
+}
+
+.sort-active::after {
+  content: " \25B4";
+  opacity: 0.5;
+}
+
+.sort-desc.sort-active::after {
+  content: " \25BE";
+  opacity: 1;
+}
+
+.sort-asc.sort-active::after {
+  content: " \25B4";
+  opacity: 1;
+}
+
+/* --- Clickable row --- */
+
+.clickable-row {
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+
+.clickable-row:hover {
+  background: rgba(92, 242, 199, 0.04);
+}
+
+.strategy-link {
+  color: var(--phosphor);
+  font-weight: 500;
+}
+
+/* --- Horizontal funnel bars --- */
+
+.funnel-horizontal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.funnel-bar {
+  display: grid;
+  grid-template-columns: 110px 1fr 60px;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.funnel-bar__label {
+  text-align: right;
+}
+
+.funnel-bar__track {
+  position: relative;
+  height: 20px;
+  background: var(--ink);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.funnel-bar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  transition: width 300ms ease;
+}
+
+.funnel-bar__fill--phosphor {
+  background: var(--phosphor);
+}
+
+.funnel-bar__fill--amber {
+  background: var(--amber);
+}
+
+.funnel-bar__fill--alert {
+  background: var(--alert);
+}
+
+.funnel-bar__fill--dim {
+  background: var(--dim);
+}
+
+.funnel-bar__count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text);
 }
 
 /* --- Reduced motion: color stays, animation goes --- */
