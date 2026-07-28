@@ -79,3 +79,35 @@ def test_database_url_raises_when_neither_override_nor_password_set() -> None:
 
     with pytest.raises(RuntimeError, match="POSTGRES_PASSWORD is required"):
         _ = settings.database_url
+
+
+def test_log_to_file_defaults_on_outside_production() -> None:
+    settings = _settings(environment="development")
+    assert settings.log_to_file is True
+
+
+def test_log_to_file_defaults_off_in_production() -> None:
+    settings = _settings(environment="production")
+    assert settings.log_to_file is False
+
+
+def test_log_to_file_explicit_override_wins_in_production() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password="secret",
+        redis_url="redis://x",
+        environment="production",
+        LOG_TO_FILE=True,
+    )
+    assert settings.log_to_file is True
+
+
+def test_log_to_file_explicit_override_wins_outside_production() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password="secret",
+        redis_url="redis://x",
+        environment="development",
+        LOG_TO_FILE=False,
+    )
+    assert settings.log_to_file is False

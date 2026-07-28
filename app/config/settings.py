@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # the incident this field was added for). ~/.polybot/logs sits outside
     # whatever's under Desktop/Documents, so it's never touched by that sync.
     log_dir: str = Field(default_factory=lambda: str(Path.home() / ".polybot" / "logs"))
+    # Opt-in, not opt-out: Railway runs Linux containers where stdout is the
+    # only sink that matters (Railway captures it directly) and there's no
+    # OneDrive-style sync process to orphan a file handle - so file logging
+    # defaults OFF in production and ON everywhere else, via log_to_file
+    # below. None here means "not explicitly set" so that default can apply;
+    # explicitly setting LOG_TO_FILE always wins regardless of environment.
+    log_to_file_override: bool | None = Field(default=None, alias="LOG_TO_FILE")
 
     postgres_user: str = "polybot"
     # Optional now: required for local dev (see database_url below, which
@@ -131,6 +138,13 @@ class Settings(BaseSettings):
                 f"consistency={self.score_weight_consistency})"
             )
         return self
+
+    @property
+    def log_to_file(self) -> bool:
+        """Explicit LOG_TO_FILE wins; otherwise off in production, on elsewhere."""
+        if self.log_to_file_override is not None:
+            return self.log_to_file_override
+        return self.environment != "production"
 
     @property
     def leaderboard_periods(self) -> list[str]:
