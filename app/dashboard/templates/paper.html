@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Paper Trading - polybot console{% endblock %}
+
+{% block content %}
+
+{% if portfolios %}
+
+<div class="comparison-strip">
+  {% for comp in comparison %}
+  <div class="comparison-card">
+    <div class="comparison-card__name">{{ comp.name }}</div>
+    <div class="count-strip" style="margin-bottom:0; grid-template-columns:1fr 1fr;">
+      <div class="comparison-card__stat">
+        <span class="micro-label">ROI</span>
+        <span class="{% if comp.roi_pct is not none and comp.roi_pct > 0 %}text-phosphor{% elif comp.roi_pct is not none and comp.roi_pct < 0 %}text-alert{% else %}text-dim{% endif %}">
+          {% if comp.roi_pct is not none %}{{ "%.2f"|format(comp.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}
+        </span>
+      </div>
+      <div class="comparison-card__stat">
+        <span class="micro-label">Profit Factor</span>
+        <span>{% if comp.profit_factor is not none %}{{ "%.2f"|format(comp.profit_factor) }}{% else %}<span class="text-dim">—</span>{% endif %}</span>
+      </div>
+      <div class="comparison-card__stat">
+        <span class="micro-label">Max DD</span>
+        <span class="text-alert">{% if comp.max_drawdown_pct is not none %}{{ "%.2f"|format(comp.max_drawdown_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</span>
+      </div>
+      <div class="comparison-card__stat">
+        <span class="micro-label">Trades</span>
+        <span>{{ comp.closed_count }}</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if comparison and comparison|length > 0 and (comparison|selectattr("insufficient")|list)|length > 0 %}
+<p class="text-dim micro-label" style="margin-bottom:var(--space-4);">Portfolios with fewer than {{ paper_min_trades_for_stats }} closed trades — comparisons are not yet meaningful.</p>
+{% endif %}
+
+<div class="portfolio-selector">
+  {% for p in portfolios %}
+  <button class="portfolio-tab {% if p.id == selected_id %}active{% endif %}"
+          data-portfolio-id="{{ p.id }}"
+          hx-get="/fragments/paper-content/{{ p.id }}"
+          hx-target="#paper-content"
+          hx-swap="innerHTML">
+    {{ p.name }}
+  </button>
+  {% endfor %}
+</div>
+
+<div id="paper-content">
+  {% include "_paper_content.html" %}
+</div>
+
+{% else %}
+<p class="empty-state">No paper portfolios configured. Run the seed script first.</p>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var content = document.getElementById('paper-content');
+
+  function initEquityChart() {
+    var canvas = document.getElementById('equity-chart');
+    if (!canvas) return;
+    if (window.equityChart) { window.equityChart.destroy(); window.equityChart = null; }
+    var raw = canvas.getAttribute('data-chart-json');
+    if (!raw) return;
+    try {
+      var data = JSON.parse(raw);
+      if (!data.labels || data.labels.length === 0) return;
+      window.equityChart = new Chart(canvas, {
+        type: 'line',
+        data: data,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 300 },
+          plugins: { legend: { display: false }, tooltip: { enabled: true, backgroundColor: '#10141d', titleFont: { family: 'IBM Plex Mono', size: 11 }, bodyFont: { family: 'IBM Plex Mono', size: 12 }, titleColor: '#8a93a6', bodyColor: '#e6edf3', borderColor: '#1c2230', borderWidth: 1, padding: 8 } },
+          scales: {
+            x: { grid: { color: '#1C2230' }, ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6', maxTicksLimit: 8 } },
+            y: { grid: { color: '#1C2230' }, ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' } }
+          }
+        }
+      });
+    } catch(e) {}
+  }
+
+  initEquityChart();
+  content.addEventListener('htmx:afterSwap', initEquityChart);
+})();
+</script>
+{% endblock %}

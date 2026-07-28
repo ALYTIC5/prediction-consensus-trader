@@ -47,9 +47,14 @@
   {{ funnel_cascade(latest_run) }}
 </div>
 
-<div class="panel">
+<div class="panel" id="paper-pnl-panel">
   <div class="panel__title"><span>Paper PnL</span></div>
-  <p class="empty-state">Paper trading arrives in Phase 4.</p>
+  <div
+    hx-get="/fragments/paper-overview"
+    hx-trigger="load"
+    hx-swap="innerHTML">
+    <p class="empty-state">Loading...</p>
+  </div>
 </div>
 
 <div class="panel">

@@ -1,0 +1,73 @@
+{% if metrics %}
+
+<div class="paper-layout">
+  <div class="panel paper-layout__chart">
+    <div class="panel__title"><span>Equity Curve</span></div>
+    <div class="chart-wrap" style="height:220px;">
+      <canvas id="equity-chart"
+              data-chart-json="{{ equity_chart_json | tojson | safe }}"
+              style="width:100%; height:100%;">
+      </canvas>
+    </div>
+    {% if not equity_curve %}
+    <p class="empty-state" style="margin-top:var(--space-3);">No closed trades yet — equity curve will appear here as trades exit.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel paper-layout__metrics">
+    <div class="panel__title"><span>Metrics</span></div>
+
+    {% if metrics.insufficient_sample_note %}
+    <p class="text-dim micro-label" style="margin-bottom:var(--space-3);">{{ metrics.insufficient_sample_note }} — ratio-shaped statistics suppressed.</p>
+    {% endif %}
+
+    <table class="data-table">
+      <tbody>
+        <tr><td class="micro-label">Total Realised PnL</td><td class="num {% if metrics.total_realized_pnl > 0 %}text-phosphor{% elif metrics.total_realized_pnl < 0 %}text-alert{% endif %}">{{ "%.4f"|format(metrics.total_realized_pnl) }}</td></tr>
+        <tr><td class="micro-label">Unrealised PnL</td><td class="num {% if metrics.unrealized_pnl > 0 %}text-phosphor{% elif metrics.unrealized_pnl < 0 %}text-alert{% endif %}">{{ "%.4f"|format(metrics.unrealized_pnl) }}</td></tr>
+        <tr><td class="micro-label">Bankroll</td><td class="num">{{ "%.2f"|format(metrics.current_bankroll) }}</td></tr>
+        <tr><td class="micro-label">ROI</td><td class="num {% if metrics.roi_pct is not none and metrics.roi_pct > 0 %}text-phosphor{% elif metrics.roi_pct is not none and metrics.roi_pct < 0 %}text-alert{% endif %}">{% if metrics.roi_pct is not none %}{{ "%.4f"|format(metrics.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Win Rate</td><td class="num">{% if metrics.win_rate is not none %}{{ "%.1f"|format(metrics.win_rate * 100) }}%{% else %}<span class="text-dim">{{ metrics.insufficient_sample_note or "—" }}</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Avg Win</td><td class="num text-phosphor">{% if metrics.avg_win is not none %}{{ "%.4f"|format(metrics.avg_win) }}{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Avg Loss</td><td class="num text-alert">{% if metrics.avg_loss is not none %}{{ "%.4f"|format(metrics.avg_loss) }}{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Profit Factor</td><td class="num">{% if metrics.profit_factor is not none %}{{ "%.2f"|format(metrics.profit_factor) }}{% else %}<span class="text-dim">{{ metrics.insufficient_sample_note or "no losses yet" }}</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Max Drawdown</td><td class="num text-alert">{% if metrics.max_drawdown_pct is not none %}{{ "%.2f"|format(metrics.max_drawdown_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Sharpe</td><td class="num">{% if metrics.sharpe is not none %}{{ "%.2f"|format(metrics.sharpe) }}{% else %}<span class="text-dim">{{ metrics.insufficient_sample_note or "—" }}</span>{% endif %}</td></tr>
+        <tr><td class="micro-label">Closed</td><td class="num">{{ metrics.closed_count }}</td></tr>
+        <tr><td class="micro-label">Open</td><td class="num">{{ metrics.open_count }}</td></tr>
+        <tr><td class="micro-label">Missed</td><td class="num text-dim">{{ missed_count }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Trades</span></div>
+
+  <div class="status-filter">
+    <button class="status-filter__btn active"
+            hx-get="/fragments/paper-trades/{{ portfolio_id }}?status=all"
+            hx-target="#paper-trades"
+            hx-swap="innerHTML">All</button>
+    <button class="status-filter__btn"
+            hx-get="/fragments/paper-trades/{{ portfolio_id }}?status=OPEN"
+            hx-target="#paper-trades"
+            hx-swap="innerHTML">Open</button>
+    <button class="status-filter__btn"
+            hx-get="/fragments/paper-trades/{{ portfolio_id }}?status=CLOSED"
+            hx-target="#paper-trades"
+            hx-swap="innerHTML">Closed</button>
+    <button class="status-filter__btn"
+            hx-get="/fragments/paper-trades/{{ portfolio_id }}?status=MISSED"
+            hx-target="#paper-trades"
+            hx-swap="innerHTML">Missed</button>
+  </div>
+
+  <div id="paper-trades">
+    {% include "_paper_trades.html" %}
+  </div>
+</div>
+
+{% else %}
+<p class="empty-state">Portfolio not found.</p>
+{% endif %}

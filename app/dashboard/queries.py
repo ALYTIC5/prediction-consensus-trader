@@ -31,6 +31,8 @@ from app.db.models import (
     Market,
     MarketHistory,
     OverrideAudit,
+    PaperPortfolio,
+    PaperTrade,
     Position,
     PositionHistory,
     PriceSnapshot,
@@ -41,6 +43,7 @@ from app.db.models import (
     Wallet,
 )
 from app.db.session import db_session
+from app.paper.metrics import PortfolioMetrics, TradeData, compute_portfolio_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -863,3 +866,200 @@ def get_log_tail(lines: int = _LOG_TAIL_LINES) -> list[tuple[str, str]]:
     with log_file.open(encoding="utf-8", errors="replace") as f:
         raw_lines = [line.rstrip("\n") for line in deque(f, maxlen=lines)]
     return [(line, _log_line_class(line)) for line in raw_lines]
+
+
+# --- Paper trading page ---
+
+
+@dataclass(frozen=True)
+class PaperPortfolioRow:
+    id: int
+    name: str
+    starting_bankroll: Decimal
+    current_bankroll: Decimal
+    is_active: bool
+
+
+@dataclass(frozen=True)
+class PaperTradeRow:
+    id: int
+    signal_id: int
+    condition_id: str
+    asset: str
+    outcome: str
+    status: str
+    size: Decimal | None
+    entry_price: Decimal | None
+    signal_price: Decimal
+    slippage_paid: Decimal | None
+    entry_at: datetime | None
+    current_price: Decimal | None
+    unrealized_pnl: Decimal | None
+    exit_price: Decimal | None
+    realized_pnl: Decimal | None
+    exit_reason: str | None
+    exit_at: datetime | None
+
+
+@dataclass(frozen=True)
+class EquityPoint:
+    exit_at: datetime
+    equity: Decimal
+
+
+@dataclass(frozen=True)
+class PaperComparisonRow:
+    portfolio_id: int
+    name: str
+    roi_pct: Decimal | None
+    profit_factor: Decimal | None
+    max_drawdown_pct: Decimal | None
+    closed_count: int
+    insufficient: bool
+
+
+def list_portfolios() -> list[PaperPortfolioRow]:
+    with db_session() as session:
+        rows = (
+            session.execute(select(PaperPortfolio).order_by(PaperPortfolio.id.asc()))
+            .scalars()
+            .all()
+        )
+    return [
+        PaperPortfolioRow(
+            id=p.id,
+            name=p.name,
+            starting_bankroll=p.starting_bankroll,
+            current_bankroll=p.current_bankroll,
+            is_active=p.is_active,
+        )
+        for p in rows
+    ]
+
+
+def _trades_for_portfolio(
+    session: Session, portfolio_id: int, status_filter: str | None = None
+) -> list[PaperTrade]:
+    query = select(PaperTrade).where(PaperTrade.portfolio_id == portfolio_id)
+    if status_filter and status_filter != "all":
+        query = query.where(PaperTrade.status == status_filter)
+    return session.execute(query.order_by(PaperTrade.id.desc())).scalars().all()
+
+
+def portfolio_metrics_from_db(
+    portfolio_id: int, status_filter: str | None = None
+) -> PortfolioMetrics | None:
+    """Load one portfolio's trades from DB and compute full metrics."""
+    with db_session() as session:
+        portfolio = session.get(PaperPortfolio, portfolio_id)
+        if portfolio is None:
+            return None
+        trades = _trades_for_portfolio(session, portfolio_id, status_filter)
+
+    trade_data = [
+        TradeData(
+            status=t.status,
+            entry_price=t.entry_price,
+            size=t.size,
+            realized_pnl=t.realized_pnl,
+            unrealized_pnl=t.unrealized_pnl,
+            exit_at=t.exit_at,
+        )
+        for t in trades
+    ]
+    return compute_portfolio_metrics(
+        trades=trade_data,
+        starting_bankroll=portfolio.starting_bankroll,
+        current_bankroll=portfolio.current_bankroll,
+        min_trades_for_stats=get_settings().paper_min_trades_for_stats,
+    )
+
+
+def list_portfolio_trades(portfolio_id: int, status_filter: str = "all") -> list[PaperTradeRow]:
+    with db_session() as session:
+        trades = _trades_for_portfolio(session, portfolio_id, status_filter)
+
+    return [
+        PaperTradeRow(
+            id=t.id,
+            signal_id=t.signal_id,
+            condition_id=t.condition_id,
+            asset=t.asset,
+            outcome=t.outcome,
+            status=t.status,
+            size=t.size,
+            entry_price=t.entry_price,
+            signal_price=t.signal_price,
+            slippage_paid=t.slippage_paid,
+            entry_at=t.entry_at,
+            current_price=t.current_price,
+            unrealized_pnl=t.unrealized_pnl,
+            exit_price=t.exit_price,
+            realized_pnl=t.realized_pnl,
+            exit_reason=t.exit_reason,
+            exit_at=t.exit_at,
+        )
+        for t in trades
+    ]
+
+
+def equity_curve_points(portfolio_id: int) -> list[EquityPoint]:
+    """Equity curve built from closed trades in exit order. Each point is
+    the cumulative equity (starting_bankroll + running realized PnL) at the
+    moment of exit. Returns [] when there are no closed trades.
+    """
+    with db_session() as session:
+        portfolio = session.get(PaperPortfolio, portfolio_id)
+        if portfolio is None:
+            return []
+        closed = (
+            session.execute(
+                select(PaperTrade)
+                .where(
+                    PaperTrade.portfolio_id == portfolio_id,
+                    PaperTrade.status == "CLOSED",
+                    PaperTrade.exit_at.isnot(None),
+                    PaperTrade.realized_pnl.isnot(None),
+                )
+                .order_by(PaperTrade.exit_at.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    equity = portfolio.starting_bankroll
+    points: list[EquityPoint] = []
+    for trade in closed:
+        equity += trade.realized_pnl
+        points.append(EquityPoint(exit_at=trade.exit_at, equity=equity))
+    return points
+
+
+def get_comparison_data() -> list[PaperComparisonRow]:
+    portfolios = list_portfolios()
+    comparison: list[PaperComparisonRow] = []
+    for p in portfolios:
+        metrics = portfolio_metrics_from_db(p.id)
+        if metrics is None:
+            continue
+        comparison.append(
+            PaperComparisonRow(
+                portfolio_id=p.id,
+                name=p.name,
+                roi_pct=metrics.roi_pct,
+                profit_factor=metrics.profit_factor,
+                max_drawdown_pct=metrics.max_drawdown_pct,
+                closed_count=metrics.closed_count,
+                insufficient=metrics.insufficient_sample_note is not None,
+            )
+        )
+    return comparison
+
+
+def get_missed_count(portfolio_id: int) -> int:
+    with db_session() as session:
+        return session.execute(
+            select(func.count())
+            .select_from(PaperTrade)
+            .where(PaperTrade.portfolio_id == portfolio_id, PaperTrade.status == "MISSED")
+        ).scalar_one()

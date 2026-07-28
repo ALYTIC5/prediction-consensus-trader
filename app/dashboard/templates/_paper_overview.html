@@ -1,0 +1,39 @@
+{% if rows %}
+<div class="paper-overview">
+  {% for row in rows %}
+  <div class="paper-overview__portfolio">
+    <div class="paper-overview__name">{{ row.name }}</div>
+    <div class="paper-overview__stats">
+      <div class="paper-overview__stat">
+        <span class="micro-label">Bankroll</span>
+        <span class="num">{{ "%.2f"|format(row.metrics.current_bankroll) }}</span>
+      </div>
+      <div class="paper-overview__stat">
+        <span class="micro-label">ROI</span>
+        <span class="num {% if row.metrics.roi_pct is not none and row.metrics.roi_pct > 0 %}text-phosphor{% elif row.metrics.roi_pct is not none and row.metrics.roi_pct < 0 %}text-alert{% endif %}">
+          {% if row.metrics.roi_pct is not none %}{{ "%.2f"|format(row.metrics.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}
+        </span>
+      </div>
+      <div class="paper-overview__stat">
+        <span class="micro-label">Realised</span>
+        <span class="num {% if row.metrics.total_realized_pnl > 0 %}text-phosphor{% elif row.metrics.total_realized_pnl < 0 %}text-alert{% endif %}">{{ "%.2f"|format(row.metrics.total_realized_pnl) }}</span>
+      </div>
+      <div class="paper-overview__stat">
+        <span class="micro-label">Open</span>
+        <span class="num">{{ row.metrics.open_count }}</span>
+      </div>
+      <div class="paper-overview__stat">
+        <span class="micro-label">Win Rate</span>
+        <span class="num">{% if row.metrics.win_rate is not none %}{{ "%.1f"|format(row.metrics.win_rate * 100) }}%{% else %}<span class="text-dim">{{ row.metrics.insufficient_sample_note or "—" }}</span>{% endif %}</span>
+      </div>
+      <div class="paper-overview__stat">
+        <span class="micro-label">Missed</span>
+        <span class="num text-dim">{{ row.missed_count }}</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No paper portfolios configured.</p>
+{% endif %}

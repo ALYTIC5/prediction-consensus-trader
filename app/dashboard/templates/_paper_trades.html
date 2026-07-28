@@ -1,0 +1,48 @@
+{% if trades %}
+<div class="data-table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Market</th>
+        <th>Outcome</th>
+        <th>Entry</th>
+        <th>Size</th>
+        <th>Slippage</th>
+        <th>PnL</th>
+        <th>Reason</th>
+        <th>Entered</th>
+        <th>Exited</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trades %}
+      <tr>
+        <td>
+          <span class="tag tag--{% if t.status == 'CLOSED' %}amber{% elif t.status == 'OPEN' %}phosphor{% else %}alert{% endif %}">{{ t.status }}</span>
+        </td>
+        <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ t.asset }}</td>
+        <td style="max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ t.outcome }}</td>
+        <td class="num">{{ t.entry_price|default("—", true) }}</td>
+        <td class="num">{% if t.size is not none %}{{ "%.4f"|format(t.size) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if t.slippage_paid is not none %}{{ "%.4f"|format(t.slippage_paid) }}{% else %}—{% endif %}</td>
+        <td class="num {% if t.realized_pnl is not none and t.realized_pnl > 0 %}text-phosphor{% elif t.realized_pnl is not none and t.realized_pnl < 0 %}text-alert{% elif t.unrealized_pnl is not none and t.unrealized_pnl > 0 %}text-phosphor{% elif t.unrealized_pnl is not none and t.unrealized_pnl < 0 %}text-alert{% endif %}">
+          {% if t.realized_pnl is not none %}
+            {{ "%.4f"|format(t.realized_pnl) }}
+          {% elif t.unrealized_pnl is not none %}
+            {{ "%.4f"|format(t.unrealized_pnl) }}*
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>{{ t.exit_reason|default("—", true) }}</td>
+        <td class="text-dim">{{ t.entry_at|relative_time }}</td>
+        <td class="text-dim">{{ t.exit_at|relative_time }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty-state">No trades with this status yet.</p>
+{% endif %}

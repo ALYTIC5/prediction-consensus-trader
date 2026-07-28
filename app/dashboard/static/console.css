@@ -324,6 +324,10 @@ p {
   color: var(--amber);
 }
 
+.tag--phosphor {
+  color: var(--phosphor);
+}
+
 .tag--alert {
   color: var(--alert);
 }
@@ -501,6 +505,171 @@ p {
 .tape__wallet {
   color: var(--dim);
   text-align: right;
+}
+
+/* --- Comparison strip (Paper page) --- */
+
+.comparison-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.comparison-card {
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+}
+
+.comparison-card__name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.comparison-card__stat {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.comparison-card__stat .micro-label {
+  display: block;
+  margin-bottom: 1px;
+}
+
+/* --- Portfolio selector tabs --- */
+
+.portfolio-selector {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.portfolio-tab {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: var(--space-2) var(--space-4);
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.portfolio-tab:hover {
+  color: var(--text);
+  border-color: var(--dim);
+  background: transparent;
+}
+
+.portfolio-tab.active {
+  color: var(--phosphor);
+  border-color: var(--phosphor);
+  background: rgba(92, 242, 199, 0.06);
+}
+
+/* --- Status filter (trades table) --- */
+
+.status-filter {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.status-filter__btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.status-filter__btn:hover {
+  color: var(--text);
+  border-color: var(--dim);
+  background: transparent;
+}
+
+.status-filter__btn.active {
+  color: var(--phosphor);
+  border-color: var(--phosphor);
+  background: rgba(92, 242, 199, 0.06);
+}
+
+/* --- Paper layout (chart + metrics side by side) --- */
+
+.paper-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.paper-layout__chart {
+  min-height: 0;
+}
+
+.paper-layout__metrics {
+  min-height: 0;
+}
+
+.chart-wrap {
+  position: relative;
+}
+
+/* --- Paper overview (panel on the Overview page) --- */
+
+.paper-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.paper-overview__portfolio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--grid);
+}
+
+.paper-overview__portfolio:last-child {
+  border-bottom: none;
+}
+
+.paper-overview__name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 80px;
+}
+
+.paper-overview__stats {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.paper-overview__stat {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.paper-overview__stat .micro-label {
+  display: block;
+  margin-bottom: 1px;
 }
 
 /* --- Empty state --- */
