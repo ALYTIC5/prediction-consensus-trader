@@ -10,6 +10,7 @@ from app.collectors.markets import collect as collect_markets
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
+from app.paper.engine import run_cycle as run_paper_cycle
 from app.scheduler.runner import PeriodicJob, run_jobs
 from app.signals.generator import generate as generate_signals
 from app.utils.logging import setup_logging
@@ -57,6 +58,11 @@ async def _run() -> None:
                 name="consensus",
                 run=generate_signals,
                 interval_seconds=settings.consensus_interval_seconds,
+            ),
+            PeriodicJob(
+                name="paper",
+                run=lambda: run_paper_cycle(settings),
+                interval_seconds=settings.paper_interval_seconds,
             ),
         ]
         await run_jobs(jobs, stop_event)

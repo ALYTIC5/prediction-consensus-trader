@@ -13,6 +13,7 @@ from app.collectors.markets import collect as collect_markets
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
+from app.paper.engine import run_cycle as run_paper_cycle
 from app.signals.generator import generate as generate_signals
 from app.utils.logging import setup_logging
 
@@ -26,9 +27,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--positions", action="store_true", help="run the positions collector")
     parser.add_argument("--markets", action="store_true", help="run the markets collector")
     parser.add_argument("--consensus", action="store_true", help="run signal generation")
+    parser.add_argument("--paper", action="store_true", help="run paper trading cycle")
     args = parser.parse_args()
 
-    if not (args.all or args.leaderboard or args.positions or args.markets or args.consensus):
+    if not (
+        args.all
+        or args.leaderboard
+        or args.positions
+        or args.markets
+        or args.consensus
+        or args.paper
+    ):
         parser.error(
             "nothing to do - pass --all, --leaderboard, --positions, --markets, and/or --consensus"
         )
@@ -57,6 +66,9 @@ async def _run(args: argparse.Namespace) -> None:
         if args.all or args.consensus:
             logger.info("collect_once: running consensus")
             await generate_signals()
+        if args.all or args.paper:
+            logger.info("collect_once: running paper trading")
+            await run_paper_cycle(settings)
     finally:
         await client.aclose()
 

@@ -1,0 +1,284 @@
+"""Tests for app/paper/metrics.py - pure function tests with known sequences.
+
+Every test uses hand-computed expected values, not properties of the
+implementation itself, matching the style of test_fills.py.
+"""
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from app.paper.metrics import TradeData, compute_portfolio_metrics
+
+NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
+STARTING = Decimal("10000")
+
+
+def _closed(
+    realized_pnl: Decimal,
+    entry_price: Decimal = Decimal("0.50"),
+    size: Decimal = Decimal("100"),
+    days_offset: int = 0,
+) -> TradeData:
+    return TradeData(
+        status="CLOSED",
+        entry_price=entry_price,
+        size=size,
+        realized_pnl=realized_pnl,
+        exit_at=NOW + timedelta(days=days_offset),
+    )
+
+
+def _open(
+    unrealized_pnl: Decimal,
+    entry_price: Decimal = Decimal("0.50"),
+    size: Decimal = Decimal("100"),
+) -> TradeData:
+    return TradeData(
+        status="OPEN",
+        entry_price=entry_price,
+        size=size,
+        unrealized_pnl=unrealized_pnl,
+    )
+
+
+def test_basic_metrics() -> None:
+    """3 closed, 1 open: hand-computed PnL, win rate, profit factor,
+    drawdown all verified against known arithmetic.
+    """
+    trades = [
+        _closed(Decimal("10"), days_offset=1),
+        _closed(Decimal("-20"), days_offset=2),
+        _closed(Decimal("30"), days_offset=3),
+        _open(Decimal("5")),
+    ]
+    current_bankroll = STARTING + Decimal("20")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=3,
+    )
+
+    # Always-computed fields
+    assert result.total_realized_pnl == Decimal("20")
+    assert result.unrealized_pnl == Decimal("5")
+    assert result.current_bankroll == current_bankroll
+    assert result.roi_pct == Decimal("25") / STARTING
+
+    # Ratio-shaped (above min_trades_for_stats=3)
+    assert result.win_rate == Decimal("2") / Decimal("3")
+    assert result.avg_win == Decimal("20")
+    assert result.avg_loss == Decimal("-20")
+    assert result.profit_factor == Decimal("2")
+
+    # Counts
+    assert result.closed_count == 3
+    assert result.open_count == 1
+    assert result.insufficient_sample_note is None
+
+
+def test_max_drawdown() -> None:
+    """Equity curve: 10000 -> 9960 -> 10040 -> 9980. Max drawdown is
+    60/10040 (trough at 9980, peak at 10040).
+    """
+    trades = [
+        _closed(Decimal("-40"), days_offset=1),
+        _closed(Decimal("80"), days_offset=2),
+        _closed(Decimal("-60"), days_offset=3),
+    ]
+    current_bankroll = STARTING + Decimal("-20")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=3,
+    )
+
+    assert result.max_drawdown_pct == Decimal("60") / Decimal("10040")
+
+
+def test_small_sample_returns_none_for_ratios() -> None:
+    """5 closed trades vs min_trades_for_stats=30: every ratio-shaped stat
+    is None with an explanatory note.
+    """
+    trades = [_closed(Decimal("10"), days_offset=i) for i in range(5)]
+    current_bankroll = STARTING + Decimal("50")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=30,
+    )
+
+    assert result.win_rate is None
+    assert result.profit_factor is None
+    assert result.sharpe is None
+    assert result.max_drawdown_pct is None
+    assert result.insufficient_sample_note is not None
+    assert "n=5<30" in result.insufficient_sample_note
+
+
+def test_no_losing_trades_profit_factor_none() -> None:
+    """All winners: no gross losses, so profit_factor is undefined -> None.
+    avg_loss is also None.
+    """
+    trades = [
+        _closed(Decimal("10"), days_offset=1),
+        _closed(Decimal("20"), days_offset=2),
+    ]
+    current_bankroll = STARTING + Decimal("30")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=2,
+    )
+
+    assert result.avg_loss is None
+    assert result.profit_factor is None
+    assert result.win_rate == Decimal("1")
+
+
+def test_losing_only_profit_factor_zero() -> None:
+    """All losers: profit_factor = 0 (no gross wins). avg_win is None."""
+    trades = [
+        _closed(Decimal("-10"), days_offset=1),
+        _closed(Decimal("-20"), days_offset=2),
+    ]
+    current_bankroll = STARTING + Decimal("-30")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=2,
+    )
+
+    assert result.avg_win is None
+    assert result.profit_factor == Decimal("0")
+    assert result.win_rate == Decimal("0")
+
+
+def test_no_closed_trades() -> None:
+    """No closed trades: gated metrics are None, basic ones are 0/empty."""
+    trades = [_open(Decimal("5"))]
+    current_bankroll = STARTING
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=1,
+    )
+
+    assert result.closed_count == 0
+    assert result.open_count == 1
+    assert result.total_realized_pnl == Decimal("0")
+    assert result.unrealized_pnl == Decimal("5")
+    assert result.win_rate is None
+    assert result.profit_factor is None
+    assert result.sharpe is None
+    assert result.max_drawdown_pct is None
+    assert result.insufficient_sample_note is not None
+
+
+def test_single_trade_sharpe_none() -> None:
+    """1 closed trade: std dev can't be computed, so sharpe is None."""
+    trades = [_closed(Decimal("10"), days_offset=1)]
+    current_bankroll = STARTING + Decimal("10")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=1,
+    )
+
+    assert result.sharpe is None
+
+
+def test_sharpe_computed() -> None:
+    """3 trades with returns [0.20, -0.40, 0.60]: mean=0.13333...,
+    variance=0.25333..., std=0.50332, annualized by trades-per-year
+    (3 trades / 2 days ≈ 547.875 trades/yr).
+    """
+    trades = [
+        _closed(Decimal("10"), entry_price=Decimal("0.50"), size=Decimal("100"), days_offset=1),
+        _closed(Decimal("-20"), entry_price=Decimal("0.50"), size=Decimal("100"), days_offset=2),
+        _closed(Decimal("30"), entry_price=Decimal("0.50"), size=Decimal("100"), days_offset=3),
+    ]
+    current_bankroll = STARTING + Decimal("20")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=3,
+    )
+
+    assert result.sharpe is not None
+    assert result.sharpe > Decimal("0")
+
+
+def test_identical_returns_sharpe_none() -> None:
+    """All trades have the same per-trade return: std dev = 0 -> None."""
+    trades = [
+        _closed(Decimal("10"), entry_price=Decimal("0.50"), size=Decimal("100"), days_offset=1),
+        _closed(Decimal("10"), entry_price=Decimal("0.50"), size=Decimal("100"), days_offset=2),
+    ]
+    current_bankroll = STARTING + Decimal("20")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=2,
+    )
+
+    assert result.sharpe is None
+
+
+def test_zero_cost_trade_skipped_in_sharpe() -> None:
+    """A trade with entry_price=0 has an undefined return and is excluded
+    from the Sharpe calculation. With only 1 valid return left, Sharpe is
+    None (need >= 2).
+    """
+    trades = [
+        TradeData(
+            status="CLOSED",
+            entry_price=Decimal("0"),
+            size=Decimal("100"),
+            realized_pnl=Decimal("10"),
+            exit_at=NOW + timedelta(days=1),
+        ),
+        _closed(Decimal("20"), days_offset=2),
+    ]
+    current_bankroll = STARTING + Decimal("30")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=STARTING,
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=2,
+    )
+
+    assert result.sharpe is None
+
+
+def test_zero_starting_bankroll_roi_none() -> None:
+    """Division by zero guard on ROI when starting_bankroll is 0."""
+    trades = [_closed(Decimal("10"), days_offset=1)]
+    current_bankroll = Decimal("10")
+
+    result = compute_portfolio_metrics(
+        trades,
+        starting_bankroll=Decimal("0"),
+        current_bankroll=current_bankroll,
+        min_trades_for_stats=1,
+    )
+
+    assert result.roi_pct is None
