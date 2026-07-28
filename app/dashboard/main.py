@@ -448,19 +448,25 @@ def paper_overview_fragment(request: Request):
     """htmx fragment: Paper PnL panel for the Overview page, showing one
     compact row per portfolio.
     """
-    portfolios = queries.list_portfolios()
-    overview_rows: list[dict] = []
-    for p in portfolios:
-        metrics = queries.portfolio_metrics_from_db(p.id)
-        missed = queries.get_missed_count(p.id)
-        overview_rows.append(
-            {
-                "name": p.name,
-                "metrics": metrics,
-                "missed_count": missed,
-            }
-        )
-    context = {"rows": overview_rows}
+    try:
+        portfolios = queries.list_portfolios()
+        overview_rows: list[dict] = []
+        for p in portfolios:
+            metrics = queries.portfolio_metrics_from_db(p.id)
+            if metrics is None:
+                continue
+            missed = queries.get_missed_count(p.id)
+            overview_rows.append(
+                {
+                    "name": p.name,
+                    "metrics": metrics,
+                    "missed_count": missed,
+                }
+            )
+        context = {"rows": overview_rows}
+    except Exception:
+        logger.warning("paper-overview fragment failed", exc_info=True)
+        context = {"rows": []}
     return templates.TemplateResponse(request, "_paper_overview.html", context)
 
 
