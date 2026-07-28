@@ -10,6 +10,7 @@ below.
 """
 
 import base64
+import logging
 import secrets
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -24,6 +25,8 @@ from app.config.adjustable import ADJUSTABLE
 from app.config.settings import get_settings
 from app.dashboard import queries
 from app.dashboard.filters import relative_time, short_address, to_json
+
+logger = logging.getLogger(__name__)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent
 
@@ -87,16 +90,40 @@ def healthz() -> JSONResponse:
     """Real checks, not just "the process is up" - db/redis are actually
     pinged, so a human (or the header strip's heartbeat dot) can tell
     they're reachable right now, not just that they were configured.
+
+    Also checks every job's heartbeat (same table this powers the Overview
+    row from) and fails the check if any job is "dead" - beyond 3x its own
+    interval since its last write. Without this, a process can be up,
+    db/redis reachable, and still be silently useless: the consensus job
+    hung for 10+ hours with the process otherwise perfectly healthy, and
+    nothing here would have caught that before this check existed.
     """
     db_ok = queries.check_db_health()
     redis_ok = queries.check_redis_health()
+
+    # Only worth asking if the DB is actually up - and this must never be
+    # the thing that turns a DB outage into a 500 instead of a clean 503,
+    # same reasoning as check_db_health/check_redis_health's own broad
+    # excepts above.
+    dead_jobs: list[str] = []
+    if db_ok:
+        try:
+            heartbeats = queries.get_collector_heartbeats(get_settings())
+            dead_jobs = [hb.name for hb in heartbeats if hb.status == "dead"]
+        except Exception:
+            logger.warning("healthz: heartbeat check failed", exc_info=True)
+            db_ok = False
+
+    healthy = db_ok and redis_ok and not dead_jobs
     return JSONResponse(
-        {
-            "status": "ok" if db_ok and redis_ok else "degraded",
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ok" if healthy else "degraded",
             "db": db_ok,
             "redis": redis_ok,
+            "dead_jobs": dead_jobs,
             "time": datetime.now(UTC).isoformat(),
-        }
+        },
     )
 
 

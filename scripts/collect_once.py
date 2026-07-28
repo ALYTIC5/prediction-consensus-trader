@@ -63,7 +63,8 @@ async def _run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = _parse_args()
-    setup_logging(get_settings().log_level)
+    settings = get_settings()
+    setup_logging(settings.log_level, settings.log_dir)
     asyncio.run(_run(args))
 
 

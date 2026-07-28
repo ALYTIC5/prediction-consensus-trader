@@ -22,8 +22,19 @@ def get_engine() -> Engine:
     pool_pre_ping=True: issues a cheap SELECT 1 before handing out a pooled
     connection, so a connection dropped by the DB/network (idle timeout,
     restart) is detected and replaced instead of raising mid-transaction.
+
+    connect_timeout bounds how long establishing a brand new TCP connection
+    can take - without it, a network-level stall here has no ceiling at all.
+    pool.timeout (how long to wait for an available pooled connection when
+    the pool is exhausted) is a separate SQLAlchemy setting and already
+    defaults to 30s - not overridden here, that default is fine.
     """
-    return create_engine(get_settings().database_url, pool_pre_ping=True)
+    settings = get_settings()
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": settings.db_connect_timeout_seconds},
+    )
 
 
 @lru_cache

@@ -833,8 +833,14 @@ def get_override_audit(limit: int = 50) -> list[OverrideAudit]:
 
 # --- Logs page ---
 
-_LOG_FILE = Path("logs/polybot.log")
 _LOG_TAIL_LINES = 200
+
+
+def _log_file_path() -> Path:
+    """Settings.log_dir is read fresh, not cached at import time, so a
+    LOG_DIR change takes effect on the next request with no restart.
+    """
+    return Path(get_settings().log_dir) / "polybot.log"
 
 
 def _log_line_class(line: str) -> str:
@@ -846,12 +852,14 @@ def _log_line_class(line: str) -> str:
 
 
 def get_log_tail(lines: int = _LOG_TAIL_LINES) -> list[tuple[str, str]]:
-    """Last `lines` lines of logs/polybot.log, oldest first (reads top to
+    """Last `lines` lines of polybot.log, oldest first (reads top to
     bottom like a terminal), each paired with a CSS class for its level.
-    [] if the file doesn't exist yet - it's only created on first write.
+    [] if the file doesn't exist yet - it's only created on first write
+    (see delay=True in app/utils/logging.py).
     """
-    if not _LOG_FILE.exists():
+    log_file = _log_file_path()
+    if not log_file.exists():
         return []
-    with _LOG_FILE.open(encoding="utf-8", errors="replace") as f:
+    with log_file.open(encoding="utf-8", errors="replace") as f:
         raw_lines = [line.rstrip("\n") for line in deque(f, maxlen=lines)]
     return [(line, _log_line_class(line)) for line in raw_lines]

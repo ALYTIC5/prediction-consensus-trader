@@ -7,6 +7,7 @@ testable (no hidden env lookups scattered through the codebase).
 
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import quote_plus
 
 from pydantic import Field, model_validator
@@ -31,6 +32,13 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_level: str = "INFO"
+    # Deliberately NOT under a OneDrive/Dropbox/etc-synced folder by default -
+    # this project's own working directory is inside OneDrive, and OneDrive's
+    # background file replacement during sync silently orphaned the log
+    # handler's file descriptor for 10+ hours with zero error surfaced (see
+    # the incident this field was added for). ~/.polybot/logs sits outside
+    # whatever's under Desktop/Documents, so it's never touched by that sync.
+    log_dir: str = Field(default_factory=lambda: str(Path.home() / ".polybot" / "logs"))
 
     postgres_user: str = "polybot"
     # Optional now: required for local dev (see database_url below, which
@@ -65,6 +73,9 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 15.0
     http_max_concurrency: int = 6
 
+    # TCP connect timeout for the SQLAlchemy engine - see app/db/session.py.
+    db_connect_timeout_seconds: int = 10
+
     # Collector polling cadence. Deliberately far below the documented
     # Polymarket rate limits (gamma /markets 300 req/10s, data /trades
     # 200 req/10s, data /positions 150 req/10s - see docs/API_REFERENCE.md) -
@@ -89,6 +100,11 @@ class Settings(BaseSettings):
     score_weight_consistency: Decimal = Decimal("0.30")
 
     consensus_interval_seconds: int = 300
+    # A stuck cycle should fail loudly and retry next interval, not hang
+    # forever - see docs/PHASE3_DESIGN.md incident: the consensus job hung
+    # silently for 10+ hours with no exception and no log line. 600s is
+    # generous relative to normal sub-2s cycle times at current data volumes.
+    consensus_cycle_timeout_seconds: int = 600
     consensus_freshness_hours: int = 48
     consensus_include_increases: bool = True
     consensus_min_traders: int = 3

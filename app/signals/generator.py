@@ -16,7 +16,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config.effective import get_effective_settings
-from app.config.settings import Settings
+from app.config.settings import Settings, get_settings
 from app.consensus.engine import (
     CandidateGroup,
     ConsensusConfig,
@@ -61,9 +61,17 @@ class _CycleResult:
 
 
 async def generate() -> None:
-    """Run one full signal-generation cycle: expire, evaluate, persist, log."""
+    """Run one full signal-generation cycle: expire, evaluate, persist, log.
+
+    Wrapped in wait_for so a cycle that hangs (DB stall, connection-pool
+    starvation, anything with no timeout of its own) raises TimeoutError
+    instead of blocking this job's loop forever - the scheduler's per-job
+    try/except then logs it and retries next interval, same as any other
+    failure. See the settings field for why 600s.
+    """
     now = datetime.now(UTC)
-    result = await asyncio.to_thread(_run_cycle, now)
+    timeout = get_settings().consensus_cycle_timeout_seconds
+    result = await asyncio.wait_for(asyncio.to_thread(_run_cycle, now), timeout=timeout)
 
     if result.expired_count:
         logger.info("signals: expired %d signals", result.expired_count)
@@ -81,6 +89,8 @@ def _run_cycle(now: datetime) -> _CycleResult:
     config = ConsensusConfig.from_settings(settings)
 
     with db_session() as session:
+        _log_gap_since_last_run(session, now)
+
         expired_count = _expire_signals(session, now)
 
         events = _load_events(session, config, now)
@@ -139,6 +149,20 @@ def _run_cycle(now: datetime) -> _CycleResult:
     return _CycleResult(
         expired_count=expired_count, funnel_line=funnel_line, new_signal_lines=new_lines
     )
+
+
+def _log_gap_since_last_run(session: Session, now: datetime) -> None:
+    """Always logged at WARNING - not because a normal ~5min gap is actually
+    a problem, but because the previous silent-hang incident proved INFO-level
+    logs are too easy to miss when a job dies quietly. A visible, unmissable
+    trail of gaps is the point, even on the healthy path.
+    """
+    previous = session.execute(select(func.max(ConsensusRun.executed_at))).scalar_one()
+    if previous is None:
+        logger.warning("consensus: no previous run on record - this is the first cycle")
+        return
+    gap_seconds = (now - previous).total_seconds()
+    logger.warning("consensus: %.0fs since previous successful run", gap_seconds)
 
 
 def _expire_signals(session: Session, now: datetime) -> int:

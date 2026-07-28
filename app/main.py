@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 async def _run() -> None:
     settings = get_settings()
-    setup_logging(settings.log_level)
+    setup_logging(settings.log_level, settings.log_dir)
 
     client = PolymarketClient()
     stop_event = asyncio.Event()
