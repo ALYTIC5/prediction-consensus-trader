@@ -3,6 +3,7 @@
 # is invisible to migrations.
 from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
 from app.db.models.markets import Market, MarketHistory, PriceSnapshot
+from app.db.models.paper import PaperPortfolio, PaperTrade, PaperTradeStatus
 from app.db.models.positions import Position, PositionEventType, PositionHistory
 from app.db.models.scores import TraderScore
 from app.db.models.signals import Signal, SignalStatus
@@ -16,6 +17,9 @@ __all__ = [
     "Market",
     "MarketHistory",
     "OverrideAudit",
+    "PaperPortfolio",
+    "PaperTrade",
+    "PaperTradeStatus",
     "Position",
     "PositionEventType",
     "PositionHistory",

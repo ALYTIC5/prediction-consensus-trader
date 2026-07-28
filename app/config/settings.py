@@ -126,6 +126,140 @@ class Settings(BaseSettings):
     signal_min_hours_to_end: int = 12
     signal_ttl_hours: int = 72
 
+    # --- Phase 4: paper trading ---
+    # See docs/PHASE4_DESIGN.md. Every threshold here, none hardcoded in
+    # app/paper/ - a hardcoded threshold there is a bug, same rule as
+    # Phase 3. paper_ prefix keeps this group grep-able alongside
+    # consensus_/signal_. A portfolio's params JSONB (app/db/models/paper.py)
+    # can override any of these per-portfolio; these are just the defaults
+    # used when a portfolio doesn't set its own value for a key.
+    paper_interval_seconds: int = 120
+
+    # Fill model (app/paper/fills.py) - see design section 2.
+    paper_entry_delay_seconds: int = 30
+    paper_slippage_k: Decimal = Decimal("0.5")
+    paper_slippage_max: Decimal = Decimal("0.15")
+    paper_no_delayed_snapshot_penalty: Decimal = Decimal("0.05")
+    paper_max_entry_price_drift: Decimal = Decimal("0.15")
+    paper_resolution_price_threshold: Decimal = Decimal("0.02")
+
+    # Sizing (app/paper/sizing.py) - see design section 3.
+    paper_sizing_rule: str = "FIXED_FRACTION"
+    paper_fixed_fraction_pct: Decimal = Decimal("0.02")
+    paper_confidence_base_fraction_pct: Decimal = Decimal("0.02")
+    paper_confidence_reference_score: Decimal = Decimal("1.0")
+    paper_confidence_min_multiplier: Decimal = Decimal("0.5")
+    paper_confidence_max_multiplier: Decimal = Decimal("2.0")
+    paper_max_position_notional_pct: Decimal = Decimal("0.10")
+    paper_max_total_exposure_pct: Decimal = Decimal("0.60")
+    paper_min_position_notional_usd: Decimal = Decimal("10")
+
+    # Portfolio entry filters (app/paper/engine.py) - defaults deliberately
+    # mirror the consensus/signal thresholds a signal already had to clear
+    # to become ACTIVE, since a portfolio's own filter is a stricter gate on
+    # top of that, not an independent one.
+    paper_min_traders: int = 3
+    paper_min_weighted_score: Decimal = Decimal("1.0")
+    paper_min_combined_value_usd: Decimal = Decimal("500")
+    paper_min_liquidity_usd: Decimal = Decimal("5000")
+    paper_max_spread: Decimal = Decimal("0.05")
+
+    # Exits (app/paper/engine.py) - see design section 4c.
+    paper_take_profit_pct: Decimal = Decimal("0.30")
+    paper_stop_loss_pct: Decimal = Decimal("0.20")
+    paper_exit_on_signal_expiry_hours: int = 72
+
+    # Statistical honesty floor (app/paper/metrics.py) - see design section
+    # 7. Deliberately not portfolio-overridable: a sample-size floor is a
+    # statement about honesty, not a strategy choice, so every portfolio is
+    # held to the same bar regardless of its own params.
+    paper_min_trades_for_stats: int = 30
+
+    @model_validator(mode="after")
+    def _validate_paper_fractions(self) -> "Settings":
+        """Fields that are a fraction/percentage of a [0, 1]-bounded price
+        or of bankroll - a value outside [0, 1] is never meaningful for any
+        of these, and would silently produce nonsense sizing/slippage math.
+        """
+        fields = (
+            "paper_slippage_max",
+            "paper_no_delayed_snapshot_penalty",
+            "paper_max_entry_price_drift",
+            "paper_resolution_price_threshold",
+            "paper_fixed_fraction_pct",
+            "paper_confidence_base_fraction_pct",
+            "paper_max_position_notional_pct",
+            "paper_max_total_exposure_pct",
+            "paper_max_spread",
+            "paper_take_profit_pct",
+            "paper_stop_loss_pct",
+        )
+        for name in fields:
+            value = getattr(self, name)
+            if not (Decimal("0") <= value <= Decimal("1")):
+                raise ValueError(f"{name} must be within [0, 1], got {value}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_paper_positive_intervals(self) -> "Settings":
+        """Intervals, counts, and non-negative-only amounts - zero or
+        negative would either stop the job from ever sleeping or make a
+        threshold trivially always-pass.
+        """
+        positive_fields = (
+            "paper_interval_seconds",
+            "paper_exit_on_signal_expiry_hours",
+            "paper_min_trades_for_stats",
+            "paper_confidence_reference_score",
+        )
+        for name in positive_fields:
+            value = getattr(self, name)
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}")
+
+        non_negative_fields = (
+            "paper_entry_delay_seconds",
+            "paper_slippage_k",
+            "paper_min_position_notional_usd",
+            "paper_min_traders",
+            "paper_min_weighted_score",
+            "paper_min_combined_value_usd",
+            "paper_min_liquidity_usd",
+        )
+        for name in non_negative_fields:
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative, got {value}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_paper_confidence_multipliers(self) -> "Settings":
+        """The CONFIDENCE_WEIGHTED sizing rule clamps into
+        [min_multiplier, max_multiplier] - an inverted or negative range
+        would make that clamp meaningless or crash at runtime.
+        """
+        if self.paper_confidence_min_multiplier <= 0:
+            raise ValueError(
+                "paper_confidence_min_multiplier must be positive, "
+                f"got {self.paper_confidence_min_multiplier}"
+            )
+        if self.paper_confidence_max_multiplier < self.paper_confidence_min_multiplier:
+            raise ValueError(
+                "paper_confidence_max_multiplier "
+                f"({self.paper_confidence_max_multiplier}) must be >= "
+                f"paper_confidence_min_multiplier ({self.paper_confidence_min_multiplier})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_paper_sizing_rule(self) -> "Settings":
+        valid = {"FIXED_FRACTION", "CONFIDENCE_WEIGHTED"}
+        if self.paper_sizing_rule not in valid:
+            raise ValueError(
+                f"paper_sizing_rule must be one of {sorted(valid)}, got {self.paper_sizing_rule!r}"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_score_weights(self) -> "Settings":
         """A silent weight mis-sum would quietly under/over-weight every wallet."""
