@@ -1,0 +1,24 @@
+# Secrets - never baked into an image. Railway injects real env vars instead.
+.env
+
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+
+tests/
+docs/
+docker/
+logs/
+
+# Markdown is dropped except anything Alembic might keep under its own
+# tree (none currently, but this is written so an alembic/*.md wouldn't be
+# silently swept up by the blanket *.md rule below).
+*.md
+!alembic/**/*.md
+
+.ruff_cache
+.pytest_cache
+
+graphify-out/

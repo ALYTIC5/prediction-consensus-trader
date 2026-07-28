@@ -2,17 +2,21 @@
 
 Runs as its own process (scripts/run_dashboard.py), never inside
 app.main's scheduler - a dashboard slowdown or crash must never be able to
-affect data collection, and vice versa. Bound to 127.0.0.1 only, no
-authentication - see docs/PHASE8_DESIGN.md for why that's acceptable here
-and only here.
+affect data collection, and vice versa. Local dev stays localhost-only with
+no authentication, same as the original design (see docs/PHASE8_DESIGN.md).
+Deployed (Railway) it's reachable from outside the container, so HTTP Basic
+auth is required there - see the production guard and basic_auth middleware
+below.
 """
 
+import base64
+import secrets
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -23,12 +27,59 @@ from app.dashboard.filters import relative_time, short_address, to_json
 
 _DASHBOARD_DIR = Path(__file__).resolve().parent
 
+_startup_settings = get_settings()
+if _startup_settings.environment == "production" and not (
+    _startup_settings.dashboard_user and _startup_settings.dashboard_password
+):
+    raise RuntimeError(
+        "DASHBOARD_USER and DASHBOARD_PASSWORD must both be set when "
+        "ENVIRONMENT=production - the console has no other access control, "
+        "and production must never run reachable-from-outside with no auth."
+    )
+
 app = FastAPI(title="polybot console")
 app.mount("/static", StaticFiles(directory=_DASHBOARD_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=_DASHBOARD_DIR / "templates")
 templates.env.filters["relative_time"] = relative_time
 templates.env.filters["short_address"] = short_address
 templates.env.filters["tojson"] = to_json
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    """HTTP Basic auth on every route except /healthz.
+
+    Enabled only when both DASHBOARD_USER and DASHBOARD_PASSWORD are set -
+    off by default for local dev (matches the original localhost-only,
+    no-auth design), on whenever both are configured (required in
+    production by the startup guard above). secrets.compare_digest avoids
+    leaking credential-length/prefix information via timing.
+    """
+    if request.url.path == "/healthz":
+        return await call_next(request)
+
+    settings = get_settings()
+    if not (settings.dashboard_user and settings.dashboard_password):
+        return await call_next(request)
+
+    authorized = False
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth_header.removeprefix("Basic ")).decode("utf-8")
+            username, _, password = decoded.partition(":")
+        except Exception:  # malformed/attacker-controlled header - never a 500, just unauthorized
+            username, password = "", ""
+        authorized = secrets.compare_digest(
+            username, settings.dashboard_user
+        ) and secrets.compare_digest(password, settings.dashboard_password)
+
+    if not authorized:
+        return Response(
+            status_code=401, headers={"WWW-Authenticate": 'Basic realm="polybot console"'}
+        )
+
+    return await call_next(request)
 
 
 @app.get("/healthz")

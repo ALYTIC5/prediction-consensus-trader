@@ -9,7 +9,7 @@ from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import quote_plus
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,20 +21,43 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # database_url_override's alias ("DATABASE_URL") doesn't match its
+        # field name, so populate_by_name=True is needed for that field to
+        # also be constructible/settable by its plain Python name (tests,
+        # direct instantiation) - every other field is unaffected since
+        # none of them use an alias.
+        populate_by_name=True,
     )
 
     environment: str = "development"
     log_level: str = "INFO"
 
     postgres_user: str = "polybot"
-    # No default: a missing password must fail fast at startup rather than
-    # silently connecting with an empty credential.
-    postgres_password: str
+    # Optional now: required for local dev (see database_url below, which
+    # fails fast if it's actually needed and missing), but Railway supplies
+    # a full DATABASE_URL instead and never sets this at all.
+    postgres_password: str | None = None
     postgres_db: str = "polybot"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
 
+    # Railway injects the full connection string as DATABASE_URL - the
+    # field name deliberately doesn't match so it's never confused with the
+    # POSTGRES_*-built URL; only the alias enables it from the environment.
+    database_url_override: str | None = Field(default=None, alias="DATABASE_URL")
+
     redis_url: str
+
+    # Both optional: dashboard auth is off unless both are set (see
+    # app/dashboard/main.py), and required only when ENVIRONMENT=production.
+    dashboard_user: str | None = None
+    dashboard_password: str | None = None
+
+    # None means "not set" - scripts/run_dashboard.py uses that (not just
+    # the resolved port number) to tell "Railway set PORT" apart from
+    # "nothing set it, use the local-dev default," which decides both the
+    # port AND whether to bind 0.0.0.0 or 127.0.0.1.
+    port: int | None = None
 
     gamma_api_base: str = "https://gamma-api.polymarket.com"
     data_api_base: str = "https://data-api.polymarket.com"
@@ -100,11 +123,28 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """Build the SQLAlchemy URL, quoting the password.
+        """Railway's DATABASE_URL if set, else built from POSTGRES_* fields.
 
-        quote_plus prevents special characters (@, :, /, etc.) in the
-        password from being misparsed as URL structure.
+        Railway's URL uses the plain "postgresql://" scheme, which
+        SQLAlchemy would hand to psycopg2 (not installed) rather than our
+        psycopg3 driver - rewritten to "postgresql+psycopg://" unless
+        that's already there.
+
+        quote_plus on the built-from-parts path prevents special characters
+        (@, :, /, etc.) in the password from being misparsed as URL
+        structure.
         """
+        if self.database_url_override:
+            url = self.database_url_override
+            if "+psycopg" not in url:
+                url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+            return url
+
+        if self.postgres_password is None:
+            raise RuntimeError(
+                "POSTGRES_PASSWORD is required when DATABASE_URL is not set "
+                "(local dev needs one or the other, not neither)"
+            )
         password = quote_plus(self.postgres_password)
         return (
             f"postgresql+psycopg://{self.postgres_user}:{password}"

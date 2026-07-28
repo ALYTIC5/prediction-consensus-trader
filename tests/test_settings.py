@@ -2,6 +2,8 @@
 tests are hermetic and don't depend on developer machine state.
 """
 
+import pytest
+
 from app.config.settings import Settings
 
 
@@ -45,3 +47,35 @@ def test_defaults() -> None:
     assert settings.postgres_db == "polybot"
     assert settings.postgres_host == "localhost"
     assert settings.postgres_port == 5432
+
+
+def test_database_url_prefers_database_url_override() -> None:
+    """Railway sets DATABASE_URL - when present it wins outright, the
+    POSTGRES_* fields (even if also present) are never consulted.
+    """
+    settings = Settings(
+        _env_file=None,
+        redis_url="redis://x",
+        DATABASE_URL="postgresql://user:pass@host:5432/db",
+    )
+
+    assert settings.database_url == "postgresql+psycopg://user:pass@host:5432/db"
+
+
+def test_database_url_override_does_not_double_up_psycopg() -> None:
+    settings = Settings(
+        _env_file=None,
+        redis_url="redis://x",
+        DATABASE_URL="postgresql+psycopg://user:pass@host:5432/db",
+    )
+
+    url = settings.database_url
+    assert url == "postgresql+psycopg://user:pass@host:5432/db"
+    assert url.count("+psycopg") == 1
+
+
+def test_database_url_raises_when_neither_override_nor_password_set() -> None:
+    settings = Settings(_env_file=None, redis_url="redis://x")
+
+    with pytest.raises(RuntimeError, match="POSTGRES_PASSWORD is required"):
+        _ = settings.database_url
