@@ -61,5 +61,4 @@ that actually needs a restart.
 | `alembic/`            | Database migrations                                      |
 | `scripts/`            | Operational scripts (e.g. `verify_setup.py`)             |
 | `tests/`              | Test suite                                               |
-| `docker/`             | Docker Compose infrastructure (Postgres, Redis)          |
 | `docs/`               | Project documentation                                    |

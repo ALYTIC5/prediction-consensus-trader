@@ -32,8 +32,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 
 # Deliberately not copied: .env (secrets - injected as real env vars by
-# Railway instead), tests/, docs/, docker/, .git - none of it is needed to
-# run the app, and .env especially must never end up baked into an image.
+# Railway instead), tests/, docs/, .git - none of it is needed to run the
+# app, and .env especially must never end up baked into an image.
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./alembic.ini
