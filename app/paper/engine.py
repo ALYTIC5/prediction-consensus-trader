@@ -13,13 +13,14 @@ they're fully unit-testable without a database.
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config.effective import get_effective_settings
 from app.config.settings import Settings
 from app.db.models import (
     Market,
@@ -27,12 +28,23 @@ from app.db.models import (
     PaperTrade,
     PaperTradeStatus,
     PriceSnapshot,
+    RiskEvent,
     Signal,
     SignalStatus,
 )
 from app.db.session import db_session
 from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
+from app.risk.manager import RiskManager
+from app.risk.rules import (
+    OpenPosition,
+    PortfolioState,
+    ProposedTrade,
+    RiskAction,
+    RiskDecision,
+    RiskRuleConfig,
+)
+from app.risk.sizing_tiered import TieredSizingConfig, TieredSizingRequest, size_tiered_position
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +69,7 @@ class RejectionStage(StrEnum):
     ENTRY_FILTER = "ENTRY_FILTER"
     SIZING = "SIZING"
     FILL = "FILL"
+    RISK = "RISK"
 
 
 class ResolutionOutcome(StrEnum):
@@ -211,10 +224,85 @@ def _get_param(params: dict, key: str, default: object) -> object:
 @dataclass(frozen=True)
 class PortfolioConfig:
     entry_filters: EntryFilters
+    sizer: str
     sizing: SizingConfig
+    tiered_sizing: TieredSizingConfig
     fill: FillConfig
     exits: ExitConfig
+    risk: RiskRuleConfig
     resolution_price_threshold: Decimal
+
+
+def resolve_tiered_sizing_config(params: dict, settings: Settings) -> TieredSizingConfig:
+    """docs/PHASE5_DESIGN.md section 3/9 - bands and the floor-vs-skip
+    toggle are portfolio-overridable; max_position_pct mirrors RiskManager's
+    own cap (section 9's risk_max_position_pct, flag 11) so this sizer's
+    output is never misleading on its own.
+    """
+    g = _get_param
+    return TieredSizingConfig(
+        bands=tuple(
+            tuple(band)
+            for band in g(params, "risk_tiered_score_bands", settings.risk_tiered_score_bands)
+        ),
+        max_position_pct=g(params, "risk_max_position_pct", settings.risk_max_position_pct),
+        floor_below_lowest_band=g(
+            params,
+            "risk_tiered_floor_below_lowest_band",
+            settings.risk_tiered_floor_below_lowest_band,
+        ),
+    )
+
+
+def resolve_risk_config(params: dict, settings: Settings) -> RiskRuleConfig:
+    """Every Stage 1 risk threshold/toggle a portfolio's params dict can
+    override, resolved against the global defaults for whatever it doesn't
+    set - see docs/PHASE5_DESIGN.md section 9. emergency_stop_active is
+    deliberately read straight off settings, never portfolio-overridable
+    (flag 9) - settings here is expected to already be effective settings
+    (get_effective_settings()), so this picks up a live dashboard toggle
+    with no redeploy.
+    """
+    g = _get_param
+    return RiskRuleConfig(
+        max_position_pct=g(params, "risk_max_position_pct", settings.risk_max_position_pct),
+        max_position_size_enabled=g(
+            params, "risk_max_position_size_enabled", settings.risk_max_position_size_enabled
+        ),
+        max_exposure_pct=g(params, "risk_max_exposure_pct", settings.risk_max_exposure_pct),
+        max_total_exposure_enabled=g(
+            params, "risk_max_total_exposure_enabled", settings.risk_max_total_exposure_enabled
+        ),
+        max_market_exposure_pct=g(
+            params, "risk_max_market_exposure_pct", settings.risk_max_market_exposure_pct
+        ),
+        max_market_exposure_enabled=g(
+            params, "risk_max_market_exposure_enabled", settings.risk_max_market_exposure_enabled
+        ),
+        max_correlated_exposure_pct=g(
+            params, "risk_max_correlated_exposure_pct", settings.risk_max_correlated_exposure_pct
+        ),
+        max_correlated_exposure_enabled=g(
+            params,
+            "risk_max_correlated_exposure_enabled",
+            settings.risk_max_correlated_exposure_enabled,
+        ),
+        daily_stop_loss_pct=g(
+            params, "risk_daily_stop_loss_pct", settings.risk_daily_stop_loss_pct
+        ),
+        daily_stop_loss_enabled=g(
+            params, "risk_daily_stop_loss_enabled", settings.risk_daily_stop_loss_enabled
+        ),
+        max_open_positions=g(params, "risk_max_open_positions", settings.risk_max_open_positions),
+        max_open_positions_enabled=g(
+            params, "risk_max_open_positions_enabled", settings.risk_max_open_positions_enabled
+        ),
+        min_bankroll_pct=g(params, "risk_min_bankroll_pct", settings.risk_min_bankroll_pct),
+        min_bankroll_halt_enabled=g(
+            params, "risk_min_bankroll_halt_enabled", settings.risk_min_bankroll_halt_enabled
+        ),
+        emergency_stop_active=settings.paper_emergency_stop,
+    )
 
 
 def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfig:
@@ -281,11 +369,16 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
             params, "paper_exit_on_signal_expiry_hours", settings.paper_exit_on_signal_expiry_hours
         ),
     )
+    risk = resolve_risk_config(params, settings)
+    tiered_sizing = resolve_tiered_sizing_config(params, settings)
     return PortfolioConfig(
         entry_filters=entry_filters,
+        sizer=g(params, "paper_sizer", settings.risk_default_sizer),
         sizing=sizing,
+        tiered_sizing=tiered_sizing,
         fill=fill,
         exits=exits,
+        risk=risk,
         resolution_price_threshold=settings.paper_resolution_price_threshold,
     )
 
@@ -356,6 +449,91 @@ def _load_snapshots(
     return snapshots
 
 
+def _day_start(now: datetime) -> datetime:
+    return datetime.combine(now.date(), time.min, tzinfo=UTC)
+
+
+def _compute_daily_pnl_state(
+    session: Session, portfolio: PaperPortfolio, now: datetime
+) -> tuple[Decimal, Decimal]:
+    """Returns (realized_pnl_today, day_start_bankroll), both derived from
+    paper_trades rows rather than stored (docs/PHASE5_DESIGN.md flag 3):
+    reversing today's exits (which credited bankroll) and today's still-open
+    entries (which debited it) reconstructs the midnight value.
+    """
+    day_start = _day_start(now)
+
+    exited_today = (
+        session.execute(
+            select(PaperTrade.realized_pnl).where(
+                PaperTrade.portfolio_id == portfolio.id,
+                PaperTrade.status == PaperTradeStatus.CLOSED,
+                PaperTrade.exit_at >= day_start,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    realized_pnl_today = sum((pnl for pnl in exited_today if pnl is not None), Decimal("0"))
+
+    entered_today_open = session.execute(
+        select(PaperTrade.entry_price, PaperTrade.size).where(
+            PaperTrade.portfolio_id == portfolio.id,
+            PaperTrade.status == PaperTradeStatus.OPEN,
+            PaperTrade.entry_at >= day_start,
+        )
+    ).all()
+    entered_today_cost = sum(
+        (row.entry_price * row.size for row in entered_today_open), Decimal("0")
+    )
+
+    day_start_bankroll = portfolio.current_bankroll - realized_pnl_today + entered_today_cost
+    return realized_pnl_today, day_start_bankroll
+
+
+def _record_risk_event(
+    session: Session, portfolio: PaperPortfolio, signal: Signal, decision: RiskDecision
+) -> None:
+    """Persists a risk_events row for a non-ALLOW decision - the pure
+    RiskManager/rule functions never touch a session (docs/PHASE5_DESIGN.md
+    section 8 / flag 10: only deny/resize is logged, never a routine allow).
+    """
+    session.add(
+        RiskEvent(
+            portfolio_id=portfolio.id,
+            signal_id=signal.id,
+            rule=decision.rule,
+            decision=decision.action,
+            reason=decision.reason,
+            detail=decision.detail,
+        )
+    )
+
+
+def _record_risk_denial(
+    session: Session,
+    portfolio: PaperPortfolio,
+    signal: Signal,
+    decision: RiskDecision,
+    now: datetime,
+) -> None:
+    _record_risk_event(session, portfolio, signal, decision)
+    session.add(
+        PaperTrade(
+            portfolio_id=portfolio.id,
+            signal_id=signal.id,
+            condition_id=signal.condition_id,
+            asset=signal.asset,
+            outcome=signal.outcome,
+            status=PaperTradeStatus.MISSED,
+            signal_price=signal.average_entry_price,
+            exit_reason=decision.rule,
+            rejection_reason=RejectionStage.RISK,
+            exit_at=now,
+        )
+    )
+
+
 def _run_entries(
     session: Session, portfolio: PaperPortfolio, config: PortfolioConfig, now: datetime
 ) -> list[str]:
@@ -378,12 +556,34 @@ def _run_entries(
     undecided_ids = set(select_undecided_signals([s.id for s in candidates], already_decided))
     undecided = [s for s in candidates if s.id in undecided_ids]
 
-    current_exposure = session.execute(
-        select(PaperTrade.entry_price, PaperTrade.size).where(
-            PaperTrade.portfolio_id == portfolio.id, PaperTrade.status == PaperTradeStatus.OPEN
-        )
+    open_rows = session.execute(
+        select(
+            PaperTrade.condition_id, PaperTrade.event_slug, PaperTrade.entry_price, PaperTrade.size
+        ).where(PaperTrade.portfolio_id == portfolio.id, PaperTrade.status == PaperTradeStatus.OPEN)
     ).all()
-    exposure = sum((row.entry_price * row.size for row in current_exposure), Decimal("0"))
+    open_positions = [
+        OpenPosition(
+            condition_id=row.condition_id,
+            event_slug=row.event_slug,
+            notional=row.entry_price * row.size,
+        )
+        for row in open_rows
+    ]
+    exposure = sum((p.notional for p in open_positions), Decimal("0"))
+    open_count = len(open_positions)
+
+    realized_pnl_today, day_start_bankroll = _compute_daily_pnl_state(session, portfolio, now)
+    risk_manager = RiskManager(config.risk)
+
+    def current_state() -> PortfolioState:
+        return PortfolioState(
+            current_bankroll=portfolio.current_bankroll,
+            starting_bankroll=portfolio.starting_bankroll,
+            day_start_bankroll=day_start_bankroll,
+            realized_pnl_today=realized_pnl_today,
+            open_positions=tuple(open_positions),
+            open_count=open_count,
+        )
 
     for signal in undecided:
         market = session.execute(
@@ -441,15 +641,48 @@ def _run_entries(
             )
             continue
 
-        sizing_result = size_position(
-            SizingRequest(
-                current_bankroll=portfolio.current_bankroll,
-                current_exposure=exposure,
-                weighted_score=signal.weighted_score,
-            ),
-            config.sizing,
+        pre_check_trade = ProposedTrade(
+            condition_id=signal.condition_id, event_slug=signal.event_slug
         )
-        if sizing_result.target_notional is None:
+        pre_check_decision = risk_manager.pre_check(current_state(), pre_check_trade)
+        if pre_check_decision.action != RiskAction.ALLOW:
+            _record_risk_denial(session, portfolio, signal, pre_check_decision, now)
+            lines.append(
+                f"paper[{portfolio.name}]: missed signal {signal.id} risk={pre_check_decision.rule}"
+            )
+            continue
+
+        # paper_sizer picks which sizer produces the raw notional (docs/
+        # PHASE5_DESIGN.md section 6): TIERED uses Stage 2's band mapping;
+        # KELLY isn't implemented yet (Stage 3), so it falls back to TIERED,
+        # same spirit as the documented per-signal calibration fallback;
+        # anything else (including "FIXED") uses the existing sizer,
+        # matching sizing.py's own fail-safe-to-FIXED convention.
+        if config.sizer in ("TIERED", "KELLY"):
+            tiered_result = size_tiered_position(
+                TieredSizingRequest(
+                    current_bankroll=portfolio.current_bankroll,
+                    weighted_score=signal.weighted_score,
+                ),
+                config.tiered_sizing,
+            )
+            target_notional = tiered_result.target_notional
+            skipped_reason = tiered_result.skipped_reason
+            sizer_used = "TIERED"
+        else:
+            sizing_result = size_position(
+                SizingRequest(
+                    current_bankroll=portfolio.current_bankroll,
+                    current_exposure=exposure,
+                    weighted_score=signal.weighted_score,
+                ),
+                config.sizing,
+            )
+            target_notional = sizing_result.target_notional
+            skipped_reason = sizing_result.skipped_reason
+            sizer_used = "FIXED"
+
+        if target_notional is None:
             session.add(
                 PaperTrade(
                     portfolio_id=portfolio.id,
@@ -459,22 +692,52 @@ def _run_entries(
                     outcome=signal.outcome,
                     status=PaperTradeStatus.MISSED,
                     signal_price=signal.average_entry_price,
-                    exit_reason=sizing_result.skipped_reason,
+                    exit_reason=skipped_reason,
                     rejection_reason=RejectionStage.SIZING,
                     exit_at=now,
                 )
             )
             lines.append(
-                f"paper[{portfolio.name}]: missed signal {signal.id} "
-                f"reason={sizing_result.skipped_reason}"
+                f"paper[{portfolio.name}]: missed signal {signal.id} reason={skipped_reason}"
             )
             continue
+
+        apply_trade = ProposedTrade(
+            condition_id=signal.condition_id, event_slug=signal.event_slug, notional=target_notional
+        )
+        apply_decision = risk_manager.apply(current_state(), apply_trade)
+        if apply_decision.action != RiskAction.ALLOW:
+            _record_risk_event(session, portfolio, signal, apply_decision)
+            if apply_decision.action == RiskAction.DENY:
+                session.add(
+                    PaperTrade(
+                        portfolio_id=portfolio.id,
+                        signal_id=signal.id,
+                        condition_id=signal.condition_id,
+                        asset=signal.asset,
+                        outcome=signal.outcome,
+                        status=PaperTradeStatus.MISSED,
+                        signal_price=signal.average_entry_price,
+                        exit_reason=apply_decision.rule,
+                        rejection_reason=RejectionStage.RISK,
+                        exit_at=now,
+                    )
+                )
+                lines.append(
+                    f"paper[{portfolio.name}]: missed signal {signal.id} risk={apply_decision.rule}"
+                )
+                continue
+            target_notional = apply_decision.resized_notional
+            lines.append(
+                f"paper[{portfolio.name}]: resized signal {signal.id} risk={apply_decision.rule} "
+                f"notional={target_notional:.4f}"
+            )
 
         snapshots = _load_snapshots(session, market, signal, config.fill)
         fill_result = compute_fill(
             FillRequest(
                 signal_price=signal.average_entry_price,
-                order_notional=sizing_result.target_notional,
+                order_notional=target_notional,
                 detected_at=signal.created_at,
             ),
             snapshots,
@@ -502,7 +765,7 @@ def _run_entries(
             )
             continue
 
-        size = sizing_result.target_notional / fill_result.fill_price
+        size = target_notional / fill_result.fill_price
         session.add(
             PaperTrade(
                 portfolio_id=portfolio.id,
@@ -510,17 +773,25 @@ def _run_entries(
                 condition_id=signal.condition_id,
                 asset=signal.asset,
                 outcome=signal.outcome,
+                event_slug=signal.event_slug,
                 status=PaperTradeStatus.OPEN,
                 signal_price=signal.average_entry_price,
                 entry_price=fill_result.fill_price,
                 size=size,
                 slippage_paid=fill_result.slippage_paid,
+                sizer_used=sizer_used,
                 entry_at=now,
             )
         )
         cost = size * fill_result.fill_price
         portfolio.current_bankroll -= cost
         exposure += cost
+        open_positions.append(
+            OpenPosition(
+                condition_id=signal.condition_id, event_slug=signal.event_slug, notional=cost
+            )
+        )
+        open_count += 1
         lines.append(
             f"paper[{portfolio.name}]: entered signal {signal.id} {signal.asset} "
             f"size={size:.4f} price={fill_result.fill_price:.4f} "
@@ -633,7 +904,12 @@ def _run_portfolio_cycle(
     return _CycleLog(lines=[*entry_lines, *exit_lines, summary])
 
 
-def _run_cycle_sync(settings: Settings, now: datetime) -> list[_CycleLog]:
+def _run_cycle_sync(now: datetime) -> list[_CycleLog]:
+    # Fetched fresh every cycle, same as app/signals/generator.py's
+    # _run_cycle - so paper_emergency_stop/risk_default_sizer dashboard
+    # overrides (docs/PHASE5_DESIGN.md flag 9) take effect on the very next
+    # cycle, no restart required.
+    settings = get_effective_settings()
     with db_session() as session:
         portfolios = (
             session.execute(select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)))
@@ -643,14 +919,14 @@ def _run_cycle_sync(settings: Settings, now: datetime) -> list[_CycleLog]:
         return [_run_portfolio_cycle(session, portfolio, settings, now) for portfolio in portfolios]
 
 
-async def run_cycle(settings: Settings) -> None:
+async def run_cycle() -> None:
     """Run one full paper-trading cycle: entry, mark-to-market, exit, per
     active portfolio. Runs after the consensus job so it always trades on
     the freshest completed signal-generation cycle (docs/PHASE4_DESIGN.md
     section 9).
     """
     now = datetime.now(UTC)
-    results = await asyncio.to_thread(_run_cycle_sync, settings, now)
+    results = await asyncio.to_thread(_run_cycle_sync, now)
     for result in results:
         for line in result.lines:
             logger.info(line)

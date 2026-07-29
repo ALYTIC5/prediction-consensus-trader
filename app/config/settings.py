@@ -179,6 +179,105 @@ class Settings(BaseSettings):
     # held to the same bar regardless of its own params.
     paper_min_trades_for_stats: int = 30
 
+    # --- Phase 5: risk management and dynamic position sizing ---
+    # See docs/PHASE5_DESIGN.md. risk_ prefix (flag 11: risk_max_position_pct
+    # and risk_max_exposure_pct replace paper_max_position_notional_pct /
+    # paper_max_total_exposure_pct, which RiskManager now owns instead of
+    # size_position()). Every threshold here, none hardcoded in app/risk/.
+    # Portfolio params JSONB can override any risk_/paper_sizer default here,
+    # same _get_param mechanism as every other paper_* setting.
+
+    # Stage 1 guardrails (app/risk/manager.py) - see design sections 1-2.
+    risk_max_position_pct: Decimal = Decimal("0.10")
+    risk_max_exposure_pct: Decimal = Decimal("0.60")
+    risk_max_market_exposure_pct: Decimal = Decimal("0.20")
+    risk_max_correlated_exposure_pct: Decimal = Decimal("0.30")
+    risk_daily_stop_loss_pct: Decimal = Decimal("0.10")
+    risk_max_open_positions: int = 10
+    risk_min_bankroll_pct: Decimal = Decimal("0.20")
+
+    # Per-rule kill switches - every Stage 1 rule is independently toggleable.
+    risk_max_position_size_enabled: bool = True
+    risk_max_total_exposure_enabled: bool = True
+    risk_max_market_exposure_enabled: bool = True
+    risk_max_correlated_exposure_enabled: bool = True
+    risk_daily_stop_loss_enabled: bool = True
+    risk_max_open_positions_enabled: bool = True
+    risk_min_bankroll_halt_enabled: bool = True
+
+    # Global manual kill switch (design flag 9) - lives in the adjustable
+    # overrides registry (app/config/adjustable.py) for live, no-redeploy
+    # flipping; the field here is just the base/default value (always False)
+    # that get_effective_settings() overlays a runtime_overrides row onto.
+    paper_emergency_stop: bool = False
+
+    # Stage 2: tiered confidence sizing (app/risk/sizing_tiered.py) - see
+    # design section 3. (min_score, max_score, fraction_pct) bands, evaluated
+    # in order; a score at or above the last band's min_score uses that
+    # band's fraction (an open-ended ">3.0" top band). max_score is a str
+    # "inf" for the open-ended top band's upper bound placeholder - never
+    # compared against, only min_score and fraction_pct are used at lookup
+    # time (see fraction_for() in sizing_tiered.py).
+    risk_tiered_score_bands: list[tuple[Decimal, Decimal, Decimal]] = Field(
+        default_factory=lambda: [
+            (Decimal("1.0"), Decimal("1.5"), Decimal("0.005")),
+            (Decimal("1.5"), Decimal("2.0"), Decimal("0.01")),
+            (Decimal("2.0"), Decimal("3.0"), Decimal("0.02")),
+            (Decimal("3.0"), Decimal("999999"), Decimal("0.03")),
+        ]
+    )
+    # Whether a weighted_score below the lowest band's min_score sizes at
+    # that band's floor fraction (True) or is skipped outright (False) -
+    # only matters if a portfolio's own entry filter is looser than its own
+    # bands, since consensus_min_weighted_score/paper_min_weighted_score
+    # already gate signals at >= the lowest band's default min in practice.
+    risk_tiered_floor_below_lowest_band: bool = True
+
+    # Which sizer a portfolio uses absent its own paper_sizer param override -
+    # same fallback-default/portfolio-override relationship paper_sizing_rule
+    # already has (design section 6). Live-tunable via the adjustable
+    # overrides registry so an operator can flip the fleet-wide default
+    # without a redeploy; a portfolio's own params JSONB always wins over
+    # this when set.
+    risk_default_sizer: str = "FIXED"
+
+    # Stage 3a: consensus-to-probability calibration (app/risk/calibration.py)
+    # - see design section 4. Not portfolio-overridable (flag 7/9's table):
+    # calibration is a property of the shared signal-generation process
+    # across all portfolios' resolved trades, not a per-portfolio choice.
+    calibration_min_samples_per_bucket: int = 30
+    calibration_window_days: int = 90
+    calibration_trader_bands: list[tuple[Decimal, Decimal]] = Field(
+        default_factory=lambda: [
+            (Decimal("2"), Decimal("3")),
+            (Decimal("3"), Decimal("5")),
+            (Decimal("5"), Decimal("999999")),
+        ]
+    )
+    # Mirrors risk_tiered_score_bands' band shape but independently
+    # configurable (flag 7) - calibration bucketing and Stage 2's sizing
+    # bands are allowed to diverge.
+    calibration_score_bands: list[tuple[Decimal, Decimal]] = Field(
+        default_factory=lambda: [
+            (Decimal("1.0"), Decimal("1.5")),
+            (Decimal("1.5"), Decimal("2.0")),
+            (Decimal("2.0"), Decimal("3.0")),
+            (Decimal("3.0"), Decimal("999999")),
+        ]
+    )
+    calibration_price_bands: list[tuple[Decimal, Decimal]] = Field(
+        default_factory=lambda: [
+            (Decimal("0"), Decimal("0.3")),
+            (Decimal("0.3"), Decimal("0.7")),
+            (Decimal("0.7"), Decimal("1")),
+        ]
+    )
+
+    # Stage 3b: fractional Kelly sizing (app/risk/sizing_kelly.py) - see
+    # design section 5. Never above 0.5 (half Kelly) - enforced below, not
+    # just documented, same pattern as _validate_paper_sizing_rule.
+    risk_kelly_fraction: Decimal = Decimal("0.25")
+
     @model_validator(mode="after")
     def _validate_paper_fractions(self) -> "Settings":
         """Fields that are a fraction/percentage of a [0, 1]-bounded price
@@ -197,6 +296,13 @@ class Settings(BaseSettings):
             "paper_max_spread",
             "paper_take_profit_pct",
             "paper_stop_loss_pct",
+            "risk_max_position_pct",
+            "risk_max_exposure_pct",
+            "risk_max_market_exposure_pct",
+            "risk_max_correlated_exposure_pct",
+            "risk_daily_stop_loss_pct",
+            "risk_min_bankroll_pct",
+            "risk_kelly_fraction",
         )
         for name in fields:
             value = getattr(self, name)
@@ -215,6 +321,9 @@ class Settings(BaseSettings):
             "paper_exit_on_signal_expiry_hours",
             "paper_min_trades_for_stats",
             "paper_confidence_reference_score",
+            "risk_max_open_positions",
+            "calibration_min_samples_per_bucket",
+            "calibration_window_days",
         )
         for name in positive_fields:
             value = getattr(self, name)
@@ -262,6 +371,63 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"paper_sizing_rule must be one of {sorted(valid)}, got {self.paper_sizing_rule!r}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_risk_default_sizer(self) -> "Settings":
+        valid = {"FIXED", "TIERED", "KELLY"}
+        if self.risk_default_sizer not in valid:
+            raise ValueError(
+                f"risk_default_sizer must be one of {sorted(valid)}, "
+                f"got {self.risk_default_sizer!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_risk_kelly_fraction(self) -> "Settings":
+        """Never above half Kelly (docs/PHASE5_DESIGN.md section 5) - full
+        Kelly carries roughly an f-chance of drawing down to an f-fraction of
+        bankroll, and 2x full Kelly has zero expected long-run growth despite
+        positive-EV bets, so this is a hard ceiling, not just a default.
+        """
+        if self.risk_kelly_fraction > Decimal("0.5"):
+            raise ValueError(
+                f"risk_kelly_fraction must never exceed 0.5 (half Kelly), "
+                f"got {self.risk_kelly_fraction}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_bands(self) -> "Settings":
+        """Every band list must be non-empty and each (min, max) pair must
+        have min < max - an inverted or empty band list would make
+        fraction_for()/bucket lookups silently fall through to nothing.
+        """
+        two_tuple_fields = (
+            "calibration_trader_bands",
+            "calibration_score_bands",
+            "calibration_price_bands",
+        )
+        for name in two_tuple_fields:
+            bands = getattr(self, name)
+            if not bands:
+                raise ValueError(f"{name} must not be empty")
+            for low, high in bands:
+                if low >= high:
+                    raise ValueError(f"{name} band ({low}, {high}) must have min < max")
+
+        if not self.risk_tiered_score_bands:
+            raise ValueError("risk_tiered_score_bands must not be empty")
+        for low, high, fraction_pct in self.risk_tiered_score_bands:
+            if low >= high:
+                raise ValueError(
+                    f"risk_tiered_score_bands band ({low}, {high}) must have min < max"
+                )
+            if not (Decimal("0") <= fraction_pct <= Decimal("1")):
+                raise ValueError(
+                    "risk_tiered_score_bands fraction_pct must be within "
+                    f"[0, 1], got {fraction_pct}"
+                )
         return self
 
     @model_validator(mode="after")

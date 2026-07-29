@@ -91,3 +91,23 @@ class PaperTrade(Base):
     # FILL. NULL for OPEN/CLOSED trades. Populated alongside exit_reason
     # which carries the specific reason within that category.
     rejection_reason: Mapped[str | None] = mapped_column(String(32))
+
+    # --- Phase 5: risk/sizing audit trail (docs/PHASE5_DESIGN.md section 8) ---
+    # Denormalized from the signal at entry time, same as condition_id/asset/
+    # outcome above - needed so max_correlated_exposure can group open
+    # positions by event without a join (flag 8).
+    event_slug: Mapped[str | None] = mapped_column(String(300))
+    # Which sizer actually produced this trade's size - FIXED/TIERED/KELLY.
+    # A KELLY portfolio's individual trades may each have fallen back to
+    # TIERED when their calibration bucket was too sparse (section 6).
+    sizer_used: Mapped[str | None] = mapped_column(String(10))
+    # Post-RISK_KELLY_FRACTION, pre-cap fraction actually used. Null unless
+    # sizer_used=KELLY.
+    kelly_fraction: Mapped[Decimal | None] = mapped_column(Money)
+    # Calibrated probability used at decision time. Null unless
+    # sizer_used=KELLY and the signal's calibration bucket had enough samples.
+    p_hat: Mapped[Decimal | None] = mapped_column(Money)
+    # p_hat - c at decision time. Stored even on a Kelly-rejected (skipped)
+    # candidate so "there was no edge here" is answerable from the row
+    # without recomputing it - null under the same condition as p_hat.
+    edge: Mapped[Decimal | None] = mapped_column(Money)

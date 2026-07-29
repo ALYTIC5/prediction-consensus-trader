@@ -1,12 +1,14 @@
 """Registry of Settings fields tunable from the dashboard - pure, no DB, no network.
 
-See docs/PHASE8_DESIGN.md flag 5: exactly the consensus_*/signal_*
-threshold fields are live-tunable; the *_interval_seconds fields are listed
-for visibility but require a restart (the scheduler reads them once at
-startup). Nothing else appears here - DB credentials and API bases are
-never adjustable or displayed, and everything else (scoring weights,
-lookback days, tracked_wallets_limit, ...) is simply out of scope for the
-Tuning page in this phase.
+See docs/PHASE8_DESIGN.md flag 5: the consensus_*/signal_* threshold fields
+are live-tunable; the *_interval_seconds fields are listed for visibility but
+require a restart (the scheduler reads them once at startup). Extended by
+docs/PHASE5_DESIGN.md flag 9 with paper_emergency_stop (the manual kill
+switch) and risk_default_sizer (the fleet-wide fallback sizer). Nothing else
+appears here - DB credentials and API bases are never adjustable or
+displayed, and everything else (scoring weights, lookback days,
+tracked_wallets_limit, per-portfolio params, ...) is simply out of scope for
+the Tuning page.
 """
 
 from dataclasses import dataclass
@@ -18,6 +20,10 @@ from typing import Any
 class AdjustableField:
     """One Settings field the dashboard can show and, if not
     restart_required, let an operator override at runtime.
+
+    choices: for a str-typed field restricted to an enum of legal values
+    (e.g. risk_default_sizer) - None for every other type, where min/max
+    already bound the legal range.
     """
 
     type: type
@@ -25,6 +31,7 @@ class AdjustableField:
     max: Decimal | int | None
     description: str
     restart_required: bool = False
+    choices: tuple[str, ...] | None = None
 
 
 # Insertion order is the display order on the Tuning page - a plain dict
@@ -130,6 +137,25 @@ ADJUSTABLE: dict[str, AdjustableField] = {
         description="How often the consensus/signal generator runs.",
         restart_required=True,
     ),
+    # --- Phase 5: risk management (docs/PHASE5_DESIGN.md flag 9) ---
+    "paper_emergency_stop": AdjustableField(
+        type=bool,
+        min=None,
+        max=None,
+        description=(
+            "Manual kill switch - denies ALL new paper entries across every "
+            "portfolio immediately when true."
+        ),
+    ),
+    "risk_default_sizer": AdjustableField(
+        type=str,
+        min=None,
+        max=None,
+        choices=("FIXED", "TIERED", "KELLY"),
+        description=(
+            "Fleet-wide fallback sizer for portfolios whose params don't set their own paper_sizer."
+        ),
+    ),
 }
 
 
@@ -147,6 +173,8 @@ def parse_and_validate(key: str, raw_value: str) -> Any:
 
     value = _parse_value(key, raw_value, field.type)
 
+    if field.choices is not None and value not in field.choices:
+        raise ValueError(f"{key} must be one of {field.choices}, got {value!r}")
     if field.min is not None and value < field.min:
         raise ValueError(f"{key} must be >= {field.min}, got {value}")
     if field.max is not None and value > field.max:
@@ -173,4 +201,6 @@ def _parse_value(key: str, raw_value: str, expected_type: type) -> Any:
             return Decimal(raw_value)
         except InvalidOperation as exc:
             raise ValueError(f"{key} must be a number, got {raw_value!r}") from exc
+    if expected_type is str:
+        return raw_value.strip()
     raise ValueError(f"{key} has an unsupported type {expected_type!r}")

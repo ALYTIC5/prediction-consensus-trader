@@ -61,7 +61,7 @@ async def _run() -> None:
             ),
             PeriodicJob(
                 name="paper",
-                run=lambda: run_paper_cycle(settings),
+                run=run_paper_cycle,
                 interval_seconds=settings.paper_interval_seconds,
             ),
         ]

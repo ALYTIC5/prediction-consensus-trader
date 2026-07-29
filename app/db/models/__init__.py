@@ -5,6 +5,7 @@ from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
 from app.db.models.markets import Market, MarketHistory, PriceSnapshot
 from app.db.models.paper import PaperPortfolio, PaperTrade, PaperTradeStatus
 from app.db.models.positions import Position, PositionEventType, PositionHistory
+from app.db.models.risk import RiskDecisionType, RiskEvent
 from app.db.models.scores import TraderScore
 from app.db.models.signals import Signal, SignalStatus
 from app.db.models.system import AppState
@@ -24,6 +25,8 @@ __all__ = [
     "PositionEventType",
     "PositionHistory",
     "PriceSnapshot",
+    "RiskDecisionType",
+    "RiskEvent",
     "RuntimeOverride",
     "Signal",
     "SignalStatus",
