@@ -70,3 +70,29 @@ class SignalCLV(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ClusterBanditState(Base):
+    """One cluster's current Beta-Bernoulli posterior over positive-CLV
+    signals, and the adaptive weight multiplier derived from it -
+    docs/PHASE6_DESIGN.md workstream 5.
+
+    Rebuilt from scratch on every app/optimization/bandit.py run, not
+    updated incrementally - one row per cluster, same "current state, not
+    a history" shape as wallet_clusters. cluster_id is the same stable,
+    membership-hash id wallet_clusters uses (design flag 1) - that's the
+    entire reason it's a content hash rather than Louvain's own output
+    label: a cluster's reward history must survive daily reclustering as
+    long as its membership hasn't actually changed.
+    """
+
+    __tablename__ = "cluster_bandit_state"
+
+    cluster_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    alpha: Mapped[int] = mapped_column()
+    beta: Mapped[int] = mapped_column()
+    observations: Mapped[int] = mapped_column()
+    adaptive_multiplier: Mapped[Decimal] = mapped_column(Money)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

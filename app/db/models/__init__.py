@@ -3,7 +3,7 @@
 # is invisible to migrations.
 from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
 from app.db.models.markets import Market, MarketHistory, PriceSnapshot
-from app.db.models.optimization import SignalCLV, WalletCluster
+from app.db.models.optimization import ClusterBanditState, SignalCLV, WalletCluster
 from app.db.models.paper import PaperPortfolio, PaperTrade, PaperTradeStatus
 from app.db.models.positions import Position, PositionEventType, PositionHistory
 from app.db.models.risk import RiskDecisionType, RiskEvent
@@ -14,6 +14,7 @@ from app.db.models.wallets import LeaderboardSnapshot, Wallet
 
 __all__ = [
     "AppState",
+    "ClusterBanditState",
     "ConsensusRun",
     "LeaderboardSnapshot",
     "Market",

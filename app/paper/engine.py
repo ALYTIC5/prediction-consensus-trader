@@ -33,7 +33,10 @@ from app.db.models import (
     SignalStatus,
 )
 from app.db.session import db_session
+from app.optimization.bandit import effective_weighted_score, load_multipliers
+from app.optimization.clv import address_to_cluster_map
 from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
+from app.paper.resolution import ResolutionOutcome, detect_resolution
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
 from app.risk.calibration import (
     BucketStats,
@@ -79,17 +82,6 @@ class RejectionStage(StrEnum):
     SIZING = "SIZING"
     FILL = "FILL"
     RISK = "RISK"
-
-
-class ResolutionOutcome(StrEnum):
-    """See docs/PHASE4_DESIGN.md section 5 - the fallback price-inference
-    rule and its documented failure mode.
-    """
-
-    NOT_RESOLVED = "NOT_RESOLVED"
-    WON = "WON"
-    LOST = "LOST"
-    AMBIGUOUS = "AMBIGUOUS"
 
 
 # --- Pure decision points - no session, no I/O, fully unit-testable ---
@@ -151,26 +143,6 @@ def passes_entry_filters(
     if market.spread is None or market.spread > filters.max_spread:
         return False, "ABOVE_MAX_SPREAD"
     return True, None
-
-
-def detect_resolution(
-    closed: bool, latest_price: Decimal | None, threshold: Decimal
-) -> ResolutionOutcome:
-    """Fallback resolution rule (docs/PHASE4_DESIGN.md section 5, pending
-    the doc's own flag 1 - verify whether Gamma exposes an authoritative
-    settlement field before this becomes the primary rule instead of a
-    fallback). AMBIGUOUS is a real, honest answer, not an error - the
-    caller leaves the trade open and logs a warning rather than guess.
-    """
-    if not closed:
-        return ResolutionOutcome.NOT_RESOLVED
-    if latest_price is None:
-        return ResolutionOutcome.AMBIGUOUS
-    if latest_price >= 1 - threshold:
-        return ResolutionOutcome.WON
-    if latest_price <= threshold:
-        return ResolutionOutcome.LOST
-    return ResolutionOutcome.AMBIGUOUS
 
 
 def check_exit(
@@ -241,6 +213,9 @@ class PortfolioConfig:
     exits: ExitConfig
     risk: RiskRuleConfig
     resolution_price_threshold: Decimal
+    # docs/PHASE6_DESIGN.md workstream 5 / flag 14 - "adaptive" is the only
+    # seeded portfolio that sets this True.
+    use_adaptive_weighting: bool
 
 
 def resolve_kelly_sizing_config(params: dict, settings: Settings) -> KellySizingConfig:
@@ -419,6 +394,9 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
         exits=exits,
         risk=risk,
         resolution_price_threshold=settings.paper_resolution_price_threshold,
+        use_adaptive_weighting=g(
+            params, "paper_use_adaptive_weighting", settings.paper_use_adaptive_weighting
+        ),
     )
 
 
@@ -580,6 +558,8 @@ def _run_entries(
     now: datetime,
     bucket_stats: dict[tuple[int, int, int], BucketStats],
     calibration_config: CalibrationConfig,
+    cluster_of: dict[str, str],
+    multiplier_of: dict[str, Decimal],
 ) -> list[str]:
     lines: list[str] = []
 
@@ -652,10 +632,24 @@ def _run_entries(
                 )
             continue
 
+        # docs/PHASE6_DESIGN.md workstream 5 / flag 14 - the "adaptive"
+        # portfolio's entry filter recomputes weighted_score from this
+        # signal's own contributors, scaling each cluster's weight by its
+        # live bandit multiplier, instead of using the signal's stored
+        # (static) weighted_score. Every other portfolio, and the signal
+        # row itself, is completely untouched - this never forks signal
+        # generation, it only changes what THIS portfolio's own filter
+        # compares against.
+        entry_weighted_score = (
+            effective_weighted_score(signal.contributors, cluster_of, multiplier_of)
+            if config.use_adaptive_weighting
+            else signal.weighted_score
+        )
+
         passed, filter_reason = passes_entry_filters(
             SignalMetrics(
                 distinct_traders=signal.distinct_traders,
-                weighted_score=signal.weighted_score,
+                weighted_score=entry_weighted_score,
                 combined_entry_value=signal.combined_entry_value,
             ),
             MarketMetrics(
@@ -985,10 +979,14 @@ def _run_portfolio_cycle(
     now: datetime,
     bucket_stats: dict[tuple[int, int, int], BucketStats],
     calibration_config: CalibrationConfig,
+    cluster_of: dict[str, str],
+    multiplier_of: dict[str, Decimal],
 ) -> _CycleLog:
     config = resolve_portfolio_config(portfolio.params, settings)
 
-    entry_lines = _run_entries(session, portfolio, config, now, bucket_stats, calibration_config)
+    entry_lines = _run_entries(
+        session, portfolio, config, now, bucket_stats, calibration_config, cluster_of, multiplier_of
+    )
     open_trades = _mark_to_market(session, portfolio)
     exit_lines = _run_exits(session, portfolio, open_trades, config, now)
 
@@ -1019,6 +1017,13 @@ def _run_cycle_sync(now: datetime) -> list[_CycleLog]:
         records = load_resolved_trade_records(session, calibration_config.window_days, now)
         bucket_stats = compute_bucket_stats(records, calibration_config)
 
+        # Also computed once per cycle, shared by every portfolio - only
+        # "adaptive" actually reads multiplier_of, but both maps are cheap
+        # to build and every portfolio's cluster_of lookup would otherwise
+        # need to be conditional (docs/PHASE6_DESIGN.md workstream 5).
+        cluster_of = address_to_cluster_map(session)
+        multiplier_of = load_multipliers(session)
+
         portfolios = (
             session.execute(select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)))
             .scalars()
@@ -1026,7 +1031,14 @@ def _run_cycle_sync(now: datetime) -> list[_CycleLog]:
         )
         return [
             _run_portfolio_cycle(
-                session, portfolio, settings, now, bucket_stats, calibration_config
+                session,
+                portfolio,
+                settings,
+                now,
+                bucket_stats,
+                calibration_config,
+                cluster_of,
+                multiplier_of,
             )
             for portfolio in portfolios
         ]

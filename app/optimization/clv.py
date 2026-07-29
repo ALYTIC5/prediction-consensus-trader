@@ -28,7 +28,7 @@ from app.config.settings import Settings
 from app.db.models import Market, PriceSnapshot, Signal, SignalCLV, Wallet, WalletCluster
 from app.db.session import db_session
 from app.optimization.brier import run_brier_updates
-from app.paper.engine import ResolutionOutcome, detect_resolution
+from app.paper.resolution import ResolutionOutcome, detect_resolution
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +300,11 @@ def aggregate_clv_overall(session: Session, kind: str = "horizon") -> ClvAggrega
     )
 
 
-def _address_to_cluster_map(session: Session) -> dict[str, str]:
+def address_to_cluster_map(session: Session) -> dict[str, str]:
+    """Public (unlike most of this module's helpers) - app/optimization/
+    bandit.py also needs this to attribute a signal's CLV to every cluster
+    among its contributors.
+    """
     rows = session.execute(
         select(Wallet.address, WalletCluster.cluster_id).join(
             WalletCluster, WalletCluster.wallet_id == Wallet.id
@@ -322,7 +326,7 @@ def aggregate_clv_by_cluster(session: Session, kind: str = "horizon") -> list[Cl
         .join(SignalCLV, SignalCLV.signal_id == Signal.id)
         .where(column.isnot(None))
     ).all()
-    cluster_of = _address_to_cluster_map(session)
+    cluster_of = address_to_cluster_map(session)
 
     values_by_cluster: dict[str, list[Decimal]] = {}
     for contributors, value in rows:
@@ -366,6 +370,36 @@ def aggregate_clv_by_score_band(
             )
         )
     return results
+
+
+def aggregate_clv_trend(
+    session: Session, kind: str = "horizon", bucket_days: int = 7
+) -> list[ClvAggregate]:
+    """Average CLV per bucket_days-wide window, oldest first - same
+    windowing convention as app/optimization/brier.py's
+    aggregate_brier_raw_trend (computed_at is the closest proxy signal_clv
+    has to "when this became known," there being no separate resolved_at
+    column).
+    """
+    column = _clv_column(kind)
+    rows = session.execute(select(SignalCLV.computed_at, column).where(column.isnot(None))).all()
+    if not rows:
+        return []
+
+    epoch = min(row.computed_at for row in rows)
+    buckets: dict[int, list[Decimal]] = {}
+    for computed_at, value in rows:
+        idx = (computed_at - epoch).days // bucket_days
+        buckets.setdefault(idx, []).append(value)
+
+    return [
+        ClvAggregate(
+            label=f"window {idx}",
+            n=len(values),
+            avg_clv=sum(values, Decimal(0)) / Decimal(len(values)),
+        )
+        for idx, values in sorted(buckets.items())
+    ]
 
 
 def aggregate_clv_by_category(session: Session, kind: str = "horizon") -> list[ClvAggregate]:

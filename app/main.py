@@ -10,6 +10,7 @@ from app.collectors.markets import collect as collect_markets
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
+from app.optimization.bandit import run_bandit_job
 from app.optimization.clustering import run_clustering_job
 from app.optimization.clv import run_clv_job
 from app.paper.engine import run_cycle as run_paper_cycle
@@ -75,6 +76,11 @@ async def _run() -> None:
                 name="clv",
                 run=run_clv_job,
                 interval_seconds=settings.clv_update_interval_seconds,
+            ),
+            PeriodicJob(
+                name="bandit",
+                run=run_bandit_job,
+                interval_seconds=settings.adaptive_update_interval_seconds,
             ),
         ]
         await run_jobs(jobs, stop_event)

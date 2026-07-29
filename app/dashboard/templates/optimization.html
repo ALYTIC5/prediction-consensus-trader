@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block title %}Optimization - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="page-head">
+  <div class="page-head__title">Optimization</div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Cluster graph</span></div>
+  <div class="summary-strip">
+    <div class="summary-card">
+      <span class="micro-label">Tracked wallets</span>
+      <span class="summary-card__value">{{ cluster_overview.tracked_wallet_count }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">Independent clusters</span>
+      <span class="summary-card__value text-phosphor">{{ cluster_overview.cluster_count }}</span>
+    </div>
+  </div>
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    Fewer clusters than tracked wallets means real independence was found - a
+    cluster of size 1 is just a wallet that has never co-traded closely with
+    anyone. A large cluster is a probable syndicate: the old per-wallet
+    consensus logic would have counted it as that many independent voices.
+  </p>
+  {% if cluster_overview.largest_clusters %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Cluster</th>
+          <th class="num">Size</th>
+          <th>Members</th>
+          <th>Flag</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in cluster_overview.largest_clusters %}
+        <tr>
+          <td class="mono">{{ c.cluster_id }}</td>
+          <td class="num">{{ c.cluster_size }}</td>
+          <td class="text-dim">
+            {% for addr in c.member_addresses[:4] %}{{ addr | short_address }}{% if not loop.last %}, {% endif %}{% endfor %}{% if c.member_addresses|length > 4 %}, +{{ c.member_addresses|length - 4 }} more{% endif %}
+          </td>
+          <td>
+            {% if c.probable_syndicate %}
+            <span class="tag tag--alert">Probable syndicate</span>
+            {% else %}
+            <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No clustering run yet - the daily "clustering" job populates this.</p>
+  {% endif %}
+</div>
+
+<div class="detail-grid">
+  <div class="panel detail-grid__chart">
+    <div class="panel__title"><span>Closing line value (trend)</span></div>
+    <div class="chart-wrap" style="height:220px;">
+      <canvas id="clv-trend-chart"
+              data-chart-json="{{ clv_trend_json | tojson | safe }}"
+              style="width:100%; height:100%;">
+      </canvas>
+    </div>
+    {% if not clv_summary.trend %}
+    <p class="empty-state" style="margin-top:var(--space-3);">No CLV data yet - signals need to age past CLV_HORIZON_HOURS.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel detail-grid__stats">
+    <div class="panel__title"><span>Average CLV</span></div>
+    <table class="data-table">
+      <tbody>
+        <tr>
+          <td class="micro-label">Overall</td>
+          <td class="num {% if clv_summary.overall.avg_clv is not none and clv_summary.overall.avg_clv > 0 %}text-phosphor{% elif clv_summary.overall.avg_clv is not none and clv_summary.overall.avg_clv < 0 %}text-alert{% endif %}">
+            {% if clv_summary.overall.avg_clv is not none %}{{ "%.4f"|format(clv_summary.overall.avg_clv) }} (n={{ clv_summary.overall.n }}){% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+        </tr>
+        {% for b in clv_summary.by_band %}
+        <tr>
+          <td class="micro-label">Score {{ b.label }}</td>
+          <td class="num {% if b.avg_clv is not none and b.avg_clv > 0 %}text-phosphor{% elif b.avg_clv is not none and b.avg_clv < 0 %}text-alert{% endif %}">
+            {% if b.avg_clv is not none %}{{ "%.4f"|format(b.avg_clv) }} (n={{ b.n }}){% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not clv_summary.by_band %}
+    <p class="empty-state" style="margin-top:var(--space-3);">No per-band CLV yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Brier score (trend)</span></div>
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    Lower is better - 0 is a perfect prediction, 1 the worst possible one. Raw
+    scores entry_price itself against the actual outcome; the calibrated
+    version (Risk page) scores the calibrated p&#770; instead, once a bucket
+    is trusted.
+  </p>
+  <div class="chart-wrap" style="height:200px;">
+    <canvas id="brier-trend-chart"
+            data-chart-json="{{ brier_trend_json | tojson | safe }}"
+            style="width:100%; height:100%;">
+    </canvas>
+  </div>
+  <p class="text-dim" style="margin-top: var(--space-2); font-size: 12px;">
+    Overall average (raw): {% if brier_summary.overall.avg_brier is not none %}{{ "%.4f"|format(brier_summary.overall.avg_brier) }} (n={{ brier_summary.overall.n }}){% else %}<span class="text-dim">—</span>{% endif %}
+  </p>
+  {% if not brier_summary.trend %}
+  <p class="empty-state">No resolved signals yet - Brier needs a market to actually settle.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Wallet ranking changes</span></div>
+  <p class="empty-state">
+    Not available yet - Workstream 3 (statistically sound wallet ranking:
+    Wilson-bounded win rate, time decay, shrinkage, and the never-closed-
+    position "zombie" guard) hasn't been implemented in this project yet.
+    This panel is a placeholder for when it lands.
+  </p>
+</div>
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Adaptive bandit - per-cluster multipliers</span>
+    <span class="text-dim" style="font-weight: 400; font-size: 12px;">min {{ adaptive_min_signals }} signals to trust</span>
+  </div>
+  {% if bandit_states %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Cluster</th>
+          <th class="num">Alpha</th>
+          <th class="num">Beta</th>
+          <th class="num">Observations</th>
+          <th class="num">Multiplier</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bandit_states %}
+        <tr>
+          <td class="mono">{{ b.cluster_id }}</td>
+          <td class="num">{{ b.alpha }}</td>
+          <td class="num">{{ b.beta }}</td>
+          <td class="num">{{ b.observations }}</td>
+          <td class="num {% if b.adaptive_multiplier > 1 %}text-phosphor{% elif b.adaptive_multiplier < 1 %}text-alert{% endif %}">{{ "%.3f"|format(b.adaptive_multiplier) }}</td>
+          <td>
+            {% if b.trusted %}
+            <span class="tag tag--phosphor">Engaged</span>
+            {% else %}
+            <span class="tag tag--amber">Neutral (below min)</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No bandit state yet - the hourly "bandit" job populates this once CLV data exists.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  function renderTrend(canvasId) {
+    var canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    var raw = canvas.getAttribute('data-chart-json');
+    if (!raw) return;
+    try {
+      var data = JSON.parse(raw);
+      if (!data.labels || data.labels.length === 0) return;
+      new Chart(canvas, {
+        type: 'line',
+        data: data,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 300 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              enabled: true,
+              backgroundColor: '#10141d',
+              titleFont: { family: 'IBM Plex Mono', size: 11 },
+              bodyFont: { family: 'IBM Plex Mono', size: 12 },
+              titleColor: '#8a93a6',
+              bodyColor: '#e6edf3',
+              borderColor: '#1c2230',
+              borderWidth: 1,
+              padding: 8
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: '#1C2230' },
+              ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6', maxTicksLimit: 8 }
+            },
+            y: {
+              grid: { color: '#1C2230' },
+              ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+            }
+          }
+        }
+      });
+    } catch(e) {}
+  }
+  renderTrend('clv-trend-chart');
+  renderTrend('brier-trend-chart');
+})();
+</script>
+{% endblock %}

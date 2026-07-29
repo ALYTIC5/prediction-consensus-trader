@@ -397,6 +397,59 @@ def risk_page(request: Request, portfolio_id: int = 0, rule: str = ""):
     return templates.TemplateResponse(request, "risk.html", context)
 
 
+@app.get("/optimization")
+def optimization_page(request: Request):
+    """The Optimization page: Phase 6 signal-quality overview - cluster
+    graph summary, CLV, Brier trend, and the adaptive bandit's per-cluster
+    multipliers. Read-only, same as every other dashboard page.
+    """
+    settings = get_settings()
+    clv_summary = queries.get_clv_summary()
+    brier_summary = queries.get_brier_summary()
+    clv_trend_json = {
+        "labels": [point.label for point in clv_summary["trend"]],
+        "datasets": [
+            {
+                "label": "Avg CLV",
+                "data": [float(point.avg_clv) for point in clv_summary["trend"]],
+                "borderColor": "#5CF2C7",
+                "backgroundColor": "rgba(92, 242, 199, 0.1)",
+                "fill": True,
+                "tension": 0,
+                "pointRadius": 0,
+                "borderWidth": 1.5,
+            }
+        ],
+    }
+    brier_trend_json = {
+        "labels": [point.label for point in brier_summary["trend"]],
+        "datasets": [
+            {
+                "label": "Avg Brier (raw)",
+                "data": [float(point.avg_brier) for point in brier_summary["trend"]],
+                "borderColor": "#FFB454",
+                "backgroundColor": "rgba(255, 180, 84, 0.1)",
+                "fill": True,
+                "tension": 0,
+                "pointRadius": 0,
+                "borderWidth": 1.5,
+            }
+        ],
+    }
+    context = {
+        "active_page": "optimization",
+        "environment": settings.environment,
+        "cluster_overview": queries.get_cluster_overview(),
+        "clv_summary": clv_summary,
+        "clv_trend_json": clv_trend_json,
+        "brier_summary": brier_summary,
+        "brier_trend_json": brier_trend_json,
+        "bandit_states": queries.get_bandit_states(),
+        "adaptive_min_signals": settings.adaptive_min_signals,
+    }
+    return templates.TemplateResponse(request, "optimization.html", context)
+
+
 # --- Paper trading pages ---
 
 

@@ -26,6 +26,7 @@ from app.config.adjustable import ADJUSTABLE, AdjustableField, parse_and_validat
 from app.config.effective import get_effective_settings
 from app.config.settings import Settings, get_settings
 from app.db.models import (
+    ClusterBanditState,
     ConsensusRun,
     LeaderboardSnapshot,
     Market,
@@ -42,8 +43,15 @@ from app.db.models import (
     SignalStatus,
     TraderScore,
     Wallet,
+    WalletCluster,
 )
 from app.db.session import db_session
+from app.optimization.brier import aggregate_brier_raw_overall, aggregate_brier_raw_trend
+from app.optimization.clv import (
+    aggregate_clv_by_score_band,
+    aggregate_clv_overall,
+    aggregate_clv_trend,
+)
 from app.paper.engine import resolve_calibration_config, resolve_risk_config
 from app.paper.metrics import PortfolioMetrics, TradeData, compute_portfolio_metrics
 from app.risk.calibration import compute_bucket_stats, load_resolved_trade_records
@@ -1615,3 +1623,128 @@ def get_sizer_used_breakdown() -> list[SizerBreakdownRow]:
         )
         for p in portfolios
     ]
+
+
+# --- Optimization page (Phase 6 overview) ---
+
+# Dashboard-only display rule (not a Settings field): a cluster this size or
+# larger is flagged as a probable syndicate - mirrors cotrade_min_shared_
+# markets' spirit ("more than a coincidence"), not itself an enforcement
+# threshold anywhere in app/optimization/.
+_SYNDICATE_SIZE_THRESHOLD = 3
+
+
+@dataclass(frozen=True)
+class ClusterSummaryRow:
+    cluster_id: str
+    cluster_size: int
+    member_addresses: list[str]
+    probable_syndicate: bool
+
+
+@dataclass(frozen=True)
+class ClusterOverview:
+    tracked_wallet_count: int
+    cluster_count: int
+    largest_clusters: list[ClusterSummaryRow]
+
+
+@dataclass(frozen=True)
+class BanditStateRow:
+    cluster_id: str
+    alpha: int
+    beta: int
+    observations: int
+    adaptive_multiplier: Decimal
+    trusted: bool
+    updated_at: datetime
+
+
+def get_cluster_overview(limit: int = 20) -> ClusterOverview:
+    """Cluster count vs. raw tracked-wallet count, and the largest clusters
+    (a big one is a probable syndicate the old per-wallet consensus logic
+    was counting as that many independent voices - docs/PHASE6_DESIGN.md
+    workstream 1).
+    """
+    with db_session() as session:
+        tracked_wallet_count = session.execute(
+            select(func.count()).select_from(Wallet).where(Wallet.is_tracked.is_(True))
+        ).scalar_one()
+
+        rows = session.execute(
+            select(WalletCluster.cluster_id, Wallet.address, WalletCluster.cluster_size).join(
+                Wallet, WalletCluster.wallet_id == Wallet.id
+            )
+        ).all()
+
+    by_cluster: dict[str, dict] = {}
+    for cluster_id, address, cluster_size in rows:
+        entry = by_cluster.setdefault(cluster_id, {"size": cluster_size, "members": []})
+        entry["members"].append(address)
+
+    clusters = [
+        ClusterSummaryRow(
+            cluster_id=cluster_id,
+            cluster_size=data["size"],
+            member_addresses=data["members"],
+            probable_syndicate=data["size"] >= _SYNDICATE_SIZE_THRESHOLD,
+        )
+        for cluster_id, data in by_cluster.items()
+    ]
+    clusters.sort(key=lambda c: c.cluster_size, reverse=True)
+
+    return ClusterOverview(
+        tracked_wallet_count=tracked_wallet_count,
+        cluster_count=len(clusters),
+        largest_clusters=clusters[:limit],
+    )
+
+
+def get_bandit_states() -> list[BanditStateRow]:
+    """Every cluster's current Beta-Bernoulli posterior and adaptive
+    multiplier (docs/PHASE6_DESIGN.md workstream 5) - what the "adaptive"
+    portfolio's entry filter reads this cycle.
+    """
+    settings = get_effective_settings()
+    with db_session() as session:
+        rows = (
+            session.execute(
+                select(ClusterBanditState).order_by(ClusterBanditState.adaptive_multiplier.desc())
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        BanditStateRow(
+            cluster_id=row.cluster_id,
+            alpha=row.alpha,
+            beta=row.beta,
+            observations=row.observations,
+            adaptive_multiplier=row.adaptive_multiplier,
+            trusted=row.observations >= settings.adaptive_min_signals,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+def get_clv_summary() -> dict:
+    """Overall + per-score-band average CLV, plus a trend series - the
+    Optimization page's CLV panel (docs/PHASE6_DESIGN.md workstream 2/6).
+    """
+    settings = get_effective_settings()
+    with db_session() as session:
+        overall = aggregate_clv_overall(session, "horizon")
+        by_band = aggregate_clv_by_score_band(session, settings.calibration_score_bands, "horizon")
+        trend = aggregate_clv_trend(session, "horizon")
+    return {"overall": overall, "by_band": by_band, "trend": trend}
+
+
+def get_brier_summary() -> dict:
+    """Overall average raw Brier score plus a trend series - the
+    Optimization page's Brier panel (docs/PHASE6_DESIGN.md workstream 4/6).
+    """
+    with db_session() as session:
+        overall = aggregate_brier_raw_overall(session)
+        trend = aggregate_brier_raw_trend(session)
+    return {"overall": overall, "trend": trend}

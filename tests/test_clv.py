@@ -11,7 +11,7 @@ from app.optimization.clv import (
     resolve_horizon_clv,
     resolve_resolution_clv,
 )
-from app.paper.engine import ResolutionOutcome
+from app.paper.resolution import ResolutionOutcome
 
 # --- clv_value: known price trajectories, hand-computed ---
 

@@ -142,6 +142,19 @@ class Settings(BaseSettings):
     clv_entry_delay_seconds: int = 30
     clv_update_interval_seconds: int = 3600
 
+    # --- Phase 6 workstream 5: adaptive whale selection ---
+    # See docs/PHASE6_DESIGN.md workstream 5. app/optimization/bandit.py.
+    # weight_min/max are multipliers, not fractions of bankroll - deliberately
+    # not in _validate_paper_fractions' [0,1] range check (max is 2.0).
+    adaptive_weight_min: Decimal = Decimal("0.5")
+    adaptive_weight_max: Decimal = Decimal("2.0")
+    adaptive_min_signals: int = 30
+    adaptive_update_interval_seconds: int = 3600
+    # Portfolio-overridable (paper_use_adaptive_weighting in a portfolio's
+    # params) - see app/paper/strategies.py's "adaptive" StrategyConfig,
+    # the only one that sets this True.
+    paper_use_adaptive_weighting: bool = False
+
     # --- Phase 4: paper trading ---
     # See docs/PHASE4_DESIGN.md. Every threshold here, none hardcoded in
     # app/paper/ - a hardcoded threshold there is a bug, same rule as
@@ -356,6 +369,8 @@ class Settings(BaseSettings):
             "clv_horizon_hours",
             "clv_entry_delay_seconds",
             "clv_update_interval_seconds",
+            "adaptive_min_signals",
+            "adaptive_update_interval_seconds",
         )
         for name in positive_fields:
             value = getattr(self, name)
@@ -426,6 +441,24 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"risk_kelly_fraction must never exceed 0.5 (half Kelly), "
                 f"got {self.risk_kelly_fraction}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_adaptive_weight_bounds(self) -> "Settings":
+        """docs/PHASE6_DESIGN.md workstream 5 - the multiplier is clamped to
+        [weight_min, weight_max], so an inverted or non-positive range would
+        make that clamp meaningless or crash at runtime (same reasoning as
+        _validate_paper_confidence_multipliers).
+        """
+        if self.adaptive_weight_min <= 0:
+            raise ValueError(
+                f"adaptive_weight_min must be positive, got {self.adaptive_weight_min}"
+            )
+        if self.adaptive_weight_max < self.adaptive_weight_min:
+            raise ValueError(
+                f"adaptive_weight_max ({self.adaptive_weight_max}) must be >= "
+                f"adaptive_weight_min ({self.adaptive_weight_min})"
             )
         return self
 

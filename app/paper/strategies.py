@@ -34,6 +34,13 @@ class StrategyConfig:
     # sizing_tiered.py / sizing_kelly.py instead and ignore sizing_rule.
     sizer: str = "FIXED"
 
+    # --- Adaptive cluster weighting (docs/PHASE6_DESIGN.md workstream 5) ---
+    # When True, the entry filter's weighted_score check uses a live,
+    # bandit-adjusted recomputation from the signal's own contributors
+    # (app/optimization/bandit.py's effective_weighted_score()) instead of
+    # the signal's stored weighted_score - see engine.py's _run_entries.
+    use_adaptive_weighting: bool = False
+
     # --- Sizing (sizing.py SizingConfig) - only used when sizer=FIXED ---
     sizing_rule: str = "FIXED_FRACTION"
     bet_size: Decimal = Decimal("0.02")
@@ -65,6 +72,7 @@ class StrategyConfig:
         """
         return {
             "paper_sizer": self.sizer,
+            "paper_use_adaptive_weighting": self.use_adaptive_weighting,
             "paper_min_traders": self.min_traders,
             "paper_min_weighted_score": str(self.min_score),
             "paper_min_combined_value_usd": str(self.min_combined_value),
@@ -108,6 +116,22 @@ STRATEGIES: list[StrategyConfig] = [
         # section 6).
         name="kelly",
         sizer="KELLY",
+        min_traders=3,
+        min_score=Decimal("1.0"),
+        min_liquidity=Decimal("5000"),
+        bet_size=Decimal("0.02"),
+        take_profit=Decimal("0.30"),
+        stop_loss=Decimal("0.20"),
+    ),
+    StrategyConfig(
+        # Identical to baseline in every entry-filter/exit/sizer dimension
+        # except adaptive weighting - isolates whether the Workstream 5
+        # bandit's cluster multipliers actually improve on static consensus
+        # weights, the same champion/challenger methodology "kelly" already
+        # uses against "baseline" for sizing (docs/PHASE6_DESIGN.md
+        # workstream 5).
+        name="adaptive",
+        use_adaptive_weighting=True,
         min_traders=3,
         min_score=Decimal("1.0"),
         min_liquidity=Decimal("5000"),
