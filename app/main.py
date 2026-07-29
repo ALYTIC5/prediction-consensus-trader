@@ -11,6 +11,7 @@ from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
 from app.optimization.clustering import run_clustering_job
+from app.optimization.clv import run_clv_job
 from app.paper.engine import run_cycle as run_paper_cycle
 from app.scheduler.runner import PeriodicJob, run_jobs
 from app.signals.generator import generate as generate_signals
@@ -69,6 +70,11 @@ async def _run() -> None:
                 name="clustering",
                 run=run_clustering_job,
                 interval_seconds=settings.cluster_recompute_interval_hours * 3600,
+            ),
+            PeriodicJob(
+                name="clv",
+                run=run_clv_job,
+                interval_seconds=settings.clv_update_interval_seconds,
             ),
         ]
         await run_jobs(jobs, stop_event)

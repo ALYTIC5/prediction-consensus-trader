@@ -1,12 +1,13 @@
 """Phase 6 signal-quality tables - see docs/PHASE6_DESIGN.md."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
-from app.db.base import Base
+from app.db.base import Base, Money
 
 
 class WalletCluster(Base):
@@ -30,4 +31,33 @@ class WalletCluster(Base):
     cluster_size: Mapped[int] = mapped_column()
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SignalCLV(Base):
+    """One signal's closing-line-value trajectory - docs/PHASE6_DESIGN.md
+    workstream 2.
+
+    Filled in over up to three separate passes, not all at once: a row is
+    created the first time app/optimization/clv.py sees a signal, with
+    entry_price always populated (falling back to signal.average_entry_price
+    if no delayed snapshot exists yet - design flag 6); price_at_horizon/
+    clv_horizon are null until CLV_HORIZON_HOURS has actually elapsed;
+    price_at_resolution/clv_resolution are null until the market closes AND
+    resolves unambiguously (never guessed - same convention app/paper/
+    engine.py's detect_resolution already uses). One row per signal, not per
+    portfolio - CLV measures the signal itself, not any one portfolio's fill.
+    """
+
+    __tablename__ = "signal_clv"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"), unique=True, index=True)
+    entry_price: Mapped[Decimal] = mapped_column(Money)
+    price_at_horizon: Mapped[Decimal | None] = mapped_column(Money)
+    price_at_resolution: Mapped[Decimal | None] = mapped_column(Money)
+    clv_horizon: Mapped[Decimal | None] = mapped_column(Money)
+    clv_resolution: Mapped[Decimal | None] = mapped_column(Money)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

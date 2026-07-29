@@ -133,6 +133,15 @@ class Settings(BaseSettings):
     cotrade_min_shared_markets: int = 3
     cluster_recompute_interval_hours: int = 24
 
+    # --- Phase 6 workstream 2: closing line value ---
+    # See docs/PHASE6_DESIGN.md workstream 2. app/optimization/clv.py.
+    # clv_entry_delay_seconds is deliberately decoupled from any portfolio's
+    # own paper_entry_delay_seconds (design flag 6) - CLV is signal-level,
+    # one row per signal, not one per (signal, portfolio).
+    clv_horizon_hours: int = 24
+    clv_entry_delay_seconds: int = 30
+    clv_update_interval_seconds: int = 3600
+
     # --- Phase 4: paper trading ---
     # See docs/PHASE4_DESIGN.md. Every threshold here, none hardcoded in
     # app/paper/ - a hardcoded threshold there is a bug, same rule as
@@ -341,6 +350,9 @@ class Settings(BaseSettings):
             "cotrade_window_minutes",
             "cotrade_min_shared_markets",
             "cluster_recompute_interval_hours",
+            "clv_horizon_hours",
+            "clv_entry_delay_seconds",
+            "clv_update_interval_seconds",
         )
         for name in positive_fields:
             value = getattr(self, name)
