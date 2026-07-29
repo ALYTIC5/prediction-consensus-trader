@@ -123,7 +123,7 @@ def test_happy_path_three_distinct_traders_yields_signal_draft() -> None:
         ),
     ]
 
-    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
 
     assert isinstance(result, SignalDraft)
     assert result.distinct_traders == 3
@@ -149,7 +149,7 @@ def test_market_known_rejects_when_market_does_not_exist() -> None:
         current_price=None,
     )
 
-    result = evaluate_group(_happy_group(), unknown_market, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_happy_group(), unknown_market, DEFAULT_CONFIG, NOW, {})
 
     assert isinstance(result, Rejection)
     assert result.reason == RejectionReason.MARKET_KNOWN
@@ -182,7 +182,7 @@ def test_market_open_filter(
         end_date=NOW + timedelta(hours=end_date_offset_hours),
     )
 
-    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW, {})
 
     if expect_pass:
         assert isinstance(result, SignalDraft)
@@ -205,7 +205,7 @@ def test_market_open_filter(
 def test_liquidity_filter(liquidity: Decimal, volume_24h: Decimal, expect_pass: bool) -> None:
     market = replace(DEFAULT_MARKET, liquidity=liquidity, volume_24h=volume_24h)
 
-    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW, {})
 
     if expect_pass:
         assert isinstance(result, SignalDraft)
@@ -229,7 +229,7 @@ def test_liquidity_filter(liquidity: Decimal, volume_24h: Decimal, expect_pass: 
 def test_price_band_filter(price: Decimal, expect_pass: bool) -> None:
     market = replace(DEFAULT_MARKET, current_price=price)
 
-    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW, {})
 
     if expect_pass:
         assert isinstance(result, SignalDraft)
@@ -251,7 +251,7 @@ def test_price_band_filter(price: Decimal, expect_pass: bool) -> None:
 def test_spread_filter(spread: Decimal, expect_pass: bool) -> None:
     market = replace(DEFAULT_MARKET, spread=spread)
 
-    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_happy_group(), market, DEFAULT_CONFIG, NOW, {})
 
     if expect_pass:
         assert isinstance(result, SignalDraft)
@@ -273,14 +273,14 @@ def test_breadth_filter_two_traders_rejects() -> None:
         ),
     ]
 
-    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
 
     assert isinstance(result, Rejection)
     assert result.reason == RejectionReason.BREADTH
 
 
 def test_breadth_filter_three_traders_passes() -> None:
-    result = evaluate_group(_happy_group(), DEFAULT_MARKET, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_happy_group(), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
     assert isinstance(result, SignalDraft)
 
 
@@ -305,7 +305,7 @@ def test_quality_filter(third_weight: Decimal, expect_pass: bool) -> None:
         _event("0xC", weight=third_weight, acted_size=Decimal("1000"), entry_price=Decimal("1.0")),
     ]
 
-    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
 
     if expect_pass:
         assert isinstance(result, SignalDraft)
@@ -331,7 +331,7 @@ def test_conviction_filter(third_size: Decimal, expect_pass: bool) -> None:
         _event("0xC", weight=Decimal("0.4"), acted_size=third_size, entry_price=Decimal("1.0")),
     ]
 
-    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
 
     if expect_pass:
         assert isinstance(result, SignalDraft)
@@ -367,7 +367,7 @@ def test_open_then_increase_counts_as_one_trader_at_max_weight() -> None:
         ),
     ]
 
-    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW)
+    result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
 
     assert isinstance(result, SignalDraft)
     assert result.distinct_traders == 3  # 0xA counted once, not twice
@@ -391,7 +391,7 @@ def test_weighted_score_dedupes_by_wallet_using_max_weight() -> None:
         _event("0xB", weight=Decimal("0.3")),
     ]
 
-    distinct_traders, weighted_score = _weighted_score(events)
+    distinct_traders, weighted_score = _weighted_score(events, {})
 
     assert distinct_traders == 2
     assert weighted_score == Decimal("0.8") + Decimal("0.3")
@@ -428,3 +428,107 @@ def test_average_entry_price_is_size_weighted() -> None:
 
 def test_average_entry_price_zero_size_does_not_divide_by_zero() -> None:
     assert _average_entry_price(Decimal("0"), Decimal("0")) == Decimal("0")
+
+
+# --- Phase 6 workstream 1: cluster-based independence (docs/PHASE6_DESIGN.md) ---
+
+
+def test_five_wallets_in_one_cluster_count_as_one_trader_one_weight() -> None:
+    """The core fix, proven directly: five wallets that all map to the same
+    cluster_id must contribute exactly their single strongest voice - not
+    five votes and not the sum of their five weights.
+    """
+    events = [
+        _event("0xA", weight=Decimal("0.9")),
+        _event("0xB", weight=Decimal("0.7")),
+        _event("0xC", weight=Decimal("0.6")),
+        _event("0xD", weight=Decimal("0.5")),
+        _event("0xE", weight=Decimal("0.4")),
+    ]
+    cluster_of = {addr: "syndicate-1" for addr in ("0xA", "0xB", "0xC", "0xD", "0xE")}
+
+    distinct_traders, weighted_score = _weighted_score(events, cluster_of)
+
+    assert distinct_traders == 1
+    assert weighted_score == Decimal("0.9")  # the max, not the sum (3.1)
+
+
+def test_five_wallets_in_five_clusters_count_as_five_traders() -> None:
+    """Same five wallets, but genuinely unclustered (or in five different
+    clusters) - this must behave exactly as today's per-wallet logic did,
+    proving the fix only collapses provably-correlated wallets, nothing else.
+    """
+    events = [
+        _event("0xA", weight=Decimal("0.9")),
+        _event("0xB", weight=Decimal("0.7")),
+        _event("0xC", weight=Decimal("0.6")),
+        _event("0xD", weight=Decimal("0.5")),
+        _event("0xE", weight=Decimal("0.4")),
+    ]
+    cluster_of = {
+        "0xA": "cluster-a",
+        "0xB": "cluster-b",
+        "0xC": "cluster-c",
+        "0xD": "cluster-d",
+        "0xE": "cluster-e",
+    }
+
+    distinct_traders, weighted_score = _weighted_score(events, cluster_of)
+
+    assert distinct_traders == 5
+    assert weighted_score == Decimal("0.9") + Decimal("0.7") + Decimal("0.6") + Decimal(
+        "0.5"
+    ) + Decimal("0.4")
+
+
+def test_unclustered_wallet_falls_back_to_its_own_address_as_a_singleton() -> None:
+    """A wallet absent from cluster_of (never clustered with anyone, or
+    clustering hasn't run yet) must be its own independent voice - the
+    empty-mapping case every other test in this file already relies on.
+    """
+    events = [_event("0xA", weight=Decimal("0.6")), _event("0xB", weight=Decimal("0.3"))]
+
+    distinct_traders, weighted_score = _weighted_score(events, cluster_of={})
+
+    assert distinct_traders == 2
+    assert weighted_score == Decimal("0.6") + Decimal("0.3")
+
+
+def test_evaluate_group_end_to_end_with_a_five_wallet_cluster() -> None:
+    """Same proof as above, but through the full evaluate_group() path -
+    a group that would pass BREADTH/QUALITY under the old per-wallet count
+    must now correctly fail them once its five wallets share one cluster.
+    """
+    events = [
+        _event(
+            "0xA", weight=Decimal("0.9"), acted_size=Decimal("1000"), entry_price=Decimal("0.5")
+        ),
+        _event(
+            "0xB", weight=Decimal("0.7"), acted_size=Decimal("1000"), entry_price=Decimal("0.5")
+        ),
+        _event(
+            "0xC", weight=Decimal("0.6"), acted_size=Decimal("1000"), entry_price=Decimal("0.5")
+        ),
+        _event(
+            "0xD", weight=Decimal("0.5"), acted_size=Decimal("1000"), entry_price=Decimal("0.5")
+        ),
+        _event(
+            "0xE", weight=Decimal("0.4"), acted_size=Decimal("1000"), entry_price=Decimal("0.5")
+        ),
+    ]
+    cluster_of = {addr: "syndicate-1" for addr in ("0xA", "0xB", "0xC", "0xD", "0xE")}
+
+    # Unclustered: 5 distinct wallets clears consensus_min_traders=3 easily.
+    unclustered_result = evaluate_group(_group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, {})
+    assert isinstance(unclustered_result, SignalDraft)
+    assert unclustered_result.distinct_traders == 5
+
+    # Clustered: the same five wallets are one voice - fails BREADTH against
+    # consensus_min_traders=3, exactly the Sybil case this workstream exists
+    # to catch.
+    clustered_result = evaluate_group(
+        _group(events), DEFAULT_MARKET, DEFAULT_CONFIG, NOW, cluster_of
+    )
+    assert isinstance(clustered_result, Rejection)
+    assert clustered_result.reason == RejectionReason.BREADTH
+    assert clustered_result.distinct_traders == 1

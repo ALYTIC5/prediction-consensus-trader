@@ -36,6 +36,7 @@ from app.db.models import (
     SignalStatus,
     TraderScore,
     Wallet,
+    WalletCluster,
 )
 from app.db.session import db_session
 
@@ -102,6 +103,7 @@ def _run_cycle(now: datetime) -> _CycleResult:
         scores = _latest_scores_by_wallet(session, wallet_ids)
         markets = _load_markets(session, condition_ids)
         prices = _latest_prices_by_asset(session, assets)
+        cluster_of = _cluster_of_by_address(session, wallets)
 
         groups = _build_groups(events, wallets, scores, markets)
 
@@ -114,7 +116,7 @@ def _run_cycle(now: datetime) -> _CycleResult:
             market = markets.get(group.condition_id)
             current_price = prices.get(group.asset)
             market_state = _market_state(market, current_price)
-            result = evaluate_group(group, market_state, config, now)
+            result = evaluate_group(group, market_state, config, now, cluster_of)
             results.append(result)
 
             if isinstance(result, SignalDraft):
@@ -225,6 +227,25 @@ def _latest_scores_by_wallet(session: Session, wallet_ids: set[int]) -> dict[int
     )
     rows = session.execute(select(ranked.c.wallet_id, ranked.c.score).where(ranked.c.rn == 1)).all()
     return dict(rows)
+
+
+def _cluster_of_by_address(session: Session, wallets: dict[int, Wallet]) -> dict[str, str]:
+    """wallet address -> wallet_clusters.cluster_id, for every wallet
+    contributing to this cycle's candidate groups. A wallet absent from
+    the result has never been clustered with anyone and is its own
+    singleton (docs/PHASE6_DESIGN.md flag 3) - _weighted_score() falls
+    back to the wallet's own address as its cluster key in that case, so
+    there's nothing to default here.
+    """
+    if not wallets:
+        return {}
+    wallet_ids = set(wallets.keys())
+    rows = session.execute(
+        select(WalletCluster.wallet_id, WalletCluster.cluster_id).where(
+            WalletCluster.wallet_id.in_(wallet_ids)
+        )
+    ).all()
+    return {wallets[wallet_id].address: cluster_id for wallet_id, cluster_id in rows}
 
 
 def _latest_prices_by_asset(session: Session, assets: set[str]) -> dict[str, Decimal]:

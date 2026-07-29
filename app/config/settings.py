@@ -126,6 +126,13 @@ class Settings(BaseSettings):
     signal_min_hours_to_end: int = 12
     signal_ttl_hours: int = 72
 
+    # --- Phase 6 workstream 1: wallet-independence clustering ---
+    # See docs/PHASE6_DESIGN.md. app/optimization/cotrading.py /
+    # clustering.py. Offline/daily, not a hot path (scope discipline).
+    cotrade_window_minutes: int = 15
+    cotrade_min_shared_markets: int = 3
+    cluster_recompute_interval_hours: int = 24
+
     # --- Phase 4: paper trading ---
     # See docs/PHASE4_DESIGN.md. Every threshold here, none hardcoded in
     # app/paper/ - a hardcoded threshold there is a bug, same rule as
@@ -331,6 +338,9 @@ class Settings(BaseSettings):
             "risk_max_open_positions",
             "calibration_min_samples_per_bucket",
             "calibration_window_days",
+            "cotrade_window_minutes",
+            "cotrade_min_shared_markets",
+            "cluster_recompute_interval_hours",
         )
         for name in positive_fields:
             value = getattr(self, name)

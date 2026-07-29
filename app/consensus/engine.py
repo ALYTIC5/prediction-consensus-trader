@@ -6,6 +6,11 @@ position_history itself and never sees is_bootstrap - a caller elsewhere
 objects only from fresh, non-bootstrap OPENED/INCREASED events. The engine
 assumes that filtering has already happened and treats every event handed
 to it as real, current activity worth evaluating.
+
+See docs/PHASE6_DESIGN.md workstream 1 for _weighted_score()'s cluster-
+based independence fix - the caller also owns loading the wallet-address ->
+cluster_id mapping (from wallet_clusters) and passing it in; this module
+stays DB-free either way.
 """
 
 from collections.abc import Sequence
@@ -124,6 +129,11 @@ class SignalDraft:
     outcome: str
     title: str
     event_slug: str
+    # Distinct independent CLUSTERS, not distinct wallets, as of Phase 6
+    # workstream 1 - see _weighted_score()'s docstring. Field name kept as
+    # distinct_traders (matching signals.distinct_traders) since it's the
+    # same column, just redefined going forward; old rows keep whatever
+    # raw wallet count they were computed with before this change.
     distinct_traders: int
     weighted_score: Decimal
     combined_entry_value: Decimal
@@ -141,27 +151,53 @@ class Rejection:
     """
 
     reason: RejectionReason
-    distinct_traders: int
+    distinct_traders: int  # cluster count, see SignalDraft.distinct_traders
     weighted_score: Decimal
     combined_entry_value: Decimal
     average_entry_price: Decimal
     latest_market_price: Decimal | None
 
 
-def _weighted_score(events: Sequence[ContributorEvent]) -> tuple[int, Decimal]:
-    """Distinct trader count and weighted_score.
+def _weighted_score(
+    events: Sequence[ContributorEvent], cluster_of: dict[str, str]
+) -> tuple[int, Decimal]:
+    """Distinct INDEPENDENT-CLUSTER count and weighted_score.
 
-    Each wallet counts once, at the maximum weight among its own qualifying
-    events in this group - a wallet that both opened and later increased
-    the same position is one vote of conviction, not two.
+    ==========================================================================
+    PHASE 6 WORKSTREAM 1 - THE SYBIL/INDEPENDENCE FIX. See
+    docs/PHASE6_DESIGN.md workstream 1 for the full reasoning; the short
+    version: every filter downstream of this function (BREADTH's
+    consensus_min_traders, QUALITY's consensus_min_weighted_score) assumes
+    "N wallets agree" means N independent opinions. If one operator runs
+    five wallets that all open the same bet within minutes of each other,
+    the OLD per-wallet logic (dedupe by address, sum every distinct
+    wallet's weight) saw five independent votes and a healthy weighted
+    score - it was actually one voice, amplified five times. Nothing
+    downstream (sizing, risk management) can fix a consensus signal that
+    was never really consensus, so the fix has to live here, at the source.
+
+    Each wallet is mapped to its wallet_clusters assignment via cluster_of
+    (built by the caller from the wallet_clusters table - see
+    app/signals/generator.py). A wallet absent from cluster_of has never
+    co-traded with anyone closely enough to be clustered (or clustering
+    hasn't run yet) and is its own singleton cluster, keyed by its own
+    address - the correct default is "independent until proven otherwise"
+    (docs/PHASE6_DESIGN.md flag 3), not the reverse.
+
+    Within each cluster, only the MAX weight among its members' qualifying
+    events in THIS GROUP counts - not the sum. Five wallets in one cluster
+    contribute exactly as much as their single strongest voice, never more;
+    this is the literal fix, not a variation on it.
+    ==========================================================================
     """
-    max_weight_by_address: dict[str, Decimal] = {}
+    max_weight_by_cluster: dict[str, Decimal] = {}
     for event in events:
-        current = max_weight_by_address.get(event.address)
+        cluster_id = cluster_of.get(event.address, event.address)
+        current = max_weight_by_cluster.get(cluster_id)
         if current is None or event.weight > current:
-            max_weight_by_address[event.address] = event.weight
-    weighted_score = sum(max_weight_by_address.values(), Decimal(0))
-    return len(max_weight_by_address), weighted_score
+            max_weight_by_cluster[cluster_id] = event.weight
+    weighted_score = sum(max_weight_by_cluster.values(), Decimal(0))
+    return len(max_weight_by_cluster), weighted_score
 
 
 def _combined_entry_value(events: Sequence[ContributorEvent]) -> Decimal:
@@ -186,12 +222,22 @@ def _average_entry_price(combined_entry_value: Decimal, total_acted_size: Decima
 
 
 def evaluate_group(
-    group: CandidateGroup, market: MarketState, config: ConsensusConfig, now: datetime
+    group: CandidateGroup,
+    market: MarketState,
+    config: ConsensusConfig,
+    now: datetime,
+    cluster_of: dict[str, str],
 ) -> SignalDraft | Rejection:
     """Run every filter in order, returning the first rejection or a
     SignalDraft if the group clears all eight.
+
+    cluster_of maps wallet address -> wallet_clusters.cluster_id (built by
+    the caller once per cycle - see app/signals/generator.py). Passed
+    straight through to _weighted_score(); see that function's docstring
+    for why distinct_traders/weighted_score are cluster-based, not
+    wallet-based, as of Phase 6 workstream 1.
     """
-    distinct_traders, weighted_score = _weighted_score(group.events)
+    distinct_traders, weighted_score = _weighted_score(group.events, cluster_of)
     combined_entry_value = _combined_entry_value(group.events)
     average_entry_price = _average_entry_price(
         combined_entry_value, _total_acted_size(group.events)
@@ -239,6 +285,9 @@ def evaluate_group(
     if not spread_ok:
         return reject(RejectionReason.SPREAD)
 
+    # consensus_min_traders now gates on independent CLUSTERS (Phase 6
+    # workstream 1) - a syndicate of five wallets in one cluster must clear
+    # this bar as one voice, not five.
     if distinct_traders < config.consensus_min_traders:
         return reject(RejectionReason.BREADTH)
 
