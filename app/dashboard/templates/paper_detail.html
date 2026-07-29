@@ -53,6 +53,38 @@
 <p class="text-dim micro-label" style="margin-bottom:var(--space-4);">{{ metrics.insufficient_sample_note }} — ratio-shaped statistics suppressed.</p>
 {% endif %}
 
+<div class="panel">
+  <div class="panel__title"><span>Bankroll Scale</span></div>
+  <p class="text-dim micro-label" style="margin-bottom:var(--space-3);">
+    Projected outcome for this strategy's actual trade history (ROI {{ "%.2f"|format(metrics.roi_pct * 100) if metrics.roi_pct is not none else 0 }}%) at other starting bankrolls. FIXED_FRACTION sizing means dollar P&L scales linearly with bankroll; the $1 minimum-position floor binds tighter at $100 than at $500/$1000, so live behavior at larger scale may differ slightly from this projection.
+  </p>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Starting bankroll</th>
+          <th class="num">Projected P&L</th>
+          <th class="num">Projected ending bankroll</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tier in (100, 500, 1000) %}
+        {% set projected_pnl = (metrics.roi_pct * tier) if metrics.roi_pct is not none else none %}
+        <tr {% if tier == portfolio.starting_bankroll %}class="text-phosphor"{% endif %}>
+          <td class="num">${{ "{:,.0f}".format(tier) }}{% if tier == portfolio.starting_bankroll %} <span class="micro-label">(actual)</span>{% endif %}</td>
+          <td class="num {% if projected_pnl is not none and projected_pnl > 0 %}text-phosphor{% elif projected_pnl is not none and projected_pnl < 0 %}text-alert{% endif %}">
+            {% if projected_pnl is not none %}{{ "%.2f"|format(projected_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num">
+            {% if projected_pnl is not none %}{{ "{:,.2f}".format(tier + projected_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <div class="detail-grid">
   <div class="panel detail-grid__chart">
     <div class="panel__title"><span>Equity Curve</span></div>
@@ -126,7 +158,7 @@
 <div class="panel">
   <div class="panel__title"><span>Trades</span></div>
 
-  <div class="status-filter">
+  <div class="status-filter" id="paper-trades-filter">
     <button class="status-filter__btn active"
             hx-get="/fragments/paper-trades/{{ portfolio.id }}?status=all"
             hx-target="#paper-detail-trades"
@@ -157,6 +189,20 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+(function() {
+  var filterBar = document.getElementById('paper-trades-filter');
+  if (!filterBar) return;
+  filterBar.querySelectorAll('.status-filter__btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      filterBar.querySelectorAll('.status-filter__btn').forEach(function(b) {
+        b.classList.remove('active');
+      });
+      btn.classList.add('active');
+    });
+  });
+})();
+</script>
 <script>
 (function() {
   var canvas = document.getElementById('equity-chart');

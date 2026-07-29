@@ -919,6 +919,7 @@ class PaperComparisonRow:
     open_count: int
     total_realized_pnl: Decimal | None
     avg_return: Decimal | None
+    sharpe: Decimal | None
     insufficient: bool
 
 
@@ -927,6 +928,7 @@ class PaperOverviewStats:
     total_strategies: int
     active_trades: int
     total_capital: Decimal
+    total_starting_capital: Decimal
     total_realized_pnl: Decimal
     total_unrealized_pnl: Decimal
     avg_win_rate: Decimal | None
@@ -1089,6 +1091,7 @@ def get_comparison_data() -> list[PaperComparisonRow]:
                 open_count=metrics.open_count,
                 total_realized_pnl=metrics.total_realized_pnl,
                 avg_return=avg_return,
+                sharpe=metrics.sharpe,
                 insufficient=metrics.insufficient_sample_note is not None,
             )
         )
@@ -1112,6 +1115,7 @@ def overview_stats() -> PaperOverviewStats:
     portfolios = list_portfolios()
     active_trades = 0
     total_capital = Decimal("0")
+    total_starting_capital = Decimal("0")
     total_realized = Decimal("0")
     total_unrealized = Decimal("0")
     weighted_win_rate = Decimal("0")
@@ -1123,6 +1127,7 @@ def overview_stats() -> PaperOverviewStats:
             continue
         active_trades += metrics.open_count
         total_capital += metrics.current_bankroll
+        total_starting_capital += p.starting_bankroll
         total_realized += metrics.total_realized_pnl
         total_unrealized += metrics.unrealized_pnl
         if metrics.win_rate is not None and metrics.closed_count > 0:
@@ -1135,6 +1140,7 @@ def overview_stats() -> PaperOverviewStats:
         total_strategies=len(portfolios),
         active_trades=active_trades,
         total_capital=total_capital,
+        total_starting_capital=total_starting_capital,
         total_realized_pnl=total_realized,
         total_unrealized_pnl=total_unrealized,
         avg_win_rate=avg_win_rate,

@@ -47,6 +47,19 @@
   </div>
 
   <script>
+    // Delegated so it keeps working after any htmx swap replaces rows -
+    // .clickable-row exists on several tables (e.g. the paper overview
+    // leaderboard) with cursor:pointer styling that implies the whole row
+    // is clickable, not just the <a> text inside it.
+    document.addEventListener("click", function (evt) {
+      var row = evt.target.closest(".clickable-row");
+      if (!row || evt.target.closest("a")) return;
+      var href = row.getAttribute("data-href");
+      if (href) window.location.href = href;
+    });
+  </script>
+
+  <script>
     // /healthz is JSON, not an HTML fragment, so this is a small plain
     // fetch poller rather than an htmx swap - htmx handles every other
     // auto-refreshing piece of this console, just not this one.

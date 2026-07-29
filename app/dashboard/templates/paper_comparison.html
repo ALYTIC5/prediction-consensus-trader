@@ -47,7 +47,7 @@
           <td class="num {% if comp.avg_return is not none and comp.avg_return > 0 %}text-phosphor{% elif comp.avg_return is not none and comp.avg_return < 0 %}text-alert{% endif %}">
             {% if comp.avg_return is not none %}{{ "%.4f"|format(comp.avg_return) }}{% else %}<span class="text-dim">—</span>{% endif %}
           </td>
-          <td class="num">{% if comp.profit_factor is not none %}{{ "%.2f"|format(comp.profit_factor) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
+          <td class="num">{% if comp.sharpe is not none %}{{ "%.2f"|format(comp.sharpe) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
