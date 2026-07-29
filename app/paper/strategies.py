@@ -38,7 +38,7 @@ class StrategyConfig:
     confidence_max_multiplier: Decimal = Decimal("2.0")
     max_position_notional_pct: Decimal = Decimal("0.10")
     max_total_exposure_pct: Decimal = Decimal("0.60")
-    min_position_notional: Decimal = Decimal("10")
+    min_position_notional: Decimal = Decimal("1")
 
     # --- Fill model (fills.py FillConfig) ---
     entry_delay_seconds: int = 30

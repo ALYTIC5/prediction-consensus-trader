@@ -152,7 +152,11 @@ class Settings(BaseSettings):
     paper_confidence_max_multiplier: Decimal = Decimal("2.0")
     paper_max_position_notional_pct: Decimal = Decimal("0.10")
     paper_max_total_exposure_pct: Decimal = Decimal("0.60")
-    paper_min_position_notional_usd: Decimal = Decimal("10")
+    # $1, not $10 - a $10 floor makes every trade dust-reject at realistic
+    # small starting bankrolls (e.g. $100 at 2% FIXED_FRACTION = $2/trade).
+    # See docs/PHASE4_DESIGN.md section 3's "$4 dust" example: dust is
+    # relative to bankroll scale, not a fixed dollar amount independent of it.
+    paper_min_position_notional_usd: Decimal = Decimal("1")
 
     # Portfolio entry filters (app/paper/engine.py) - defaults deliberately
     # mirror the consensus/signal thresholds a signal already had to clear

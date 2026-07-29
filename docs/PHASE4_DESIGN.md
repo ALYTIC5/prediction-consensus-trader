@@ -472,7 +472,7 @@ to these defaults.
 | `paper_confidence_max_multiplier` | 2.0 | yes |
 | `paper_max_position_notional_pct` | 0.10 | yes |
 | `paper_max_total_exposure_pct` | 0.60 | yes |
-| `paper_min_position_notional_usd` | 10 | yes |
+| `paper_min_position_notional_usd` | 1 | yes |
 | `paper_min_traders` (entry filter) | = `consensus_min_traders` | yes |
 | `paper_min_weighted_score` (entry filter) | = `consensus_min_weighted_score` | yes |
 | `paper_min_combined_value_usd` (entry filter) | = `consensus_min_combined_value_usd` | yes |
