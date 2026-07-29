@@ -97,10 +97,12 @@ class PaperTrade(Base):
     # outcome above - needed so max_correlated_exposure can group open
     # positions by event without a join (flag 8).
     event_slug: Mapped[str | None] = mapped_column(String(300))
-    # Which sizer actually produced this trade's size - FIXED/TIERED/KELLY.
-    # A KELLY portfolio's individual trades may each have fallen back to
-    # TIERED when their calibration bucket was too sparse (section 6).
-    sizer_used: Mapped[str | None] = mapped_column(String(10))
+    # Which sizer actually produced this trade's size - FIXED/TIERED/KELLY/
+    # TIERED_FALLBACK. A KELLY portfolio's individual trades record
+    # TIERED_FALLBACK (not TIERED) when their own calibration bucket was too
+    # sparse to trust, distinguishing "fell back" from a portfolio that
+    # deliberately chose TIERED (section 6).
+    sizer_used: Mapped[str | None] = mapped_column(String(20))
     # Post-RISK_KELLY_FRACTION, pre-cap fraction actually used. Null unless
     # sizer_used=KELLY.
     kelly_fraction: Mapped[Decimal | None] = mapped_column(Money)

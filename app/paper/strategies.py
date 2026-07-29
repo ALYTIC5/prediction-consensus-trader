@@ -29,7 +29,12 @@ class StrategyConfig:
     min_liquidity: Decimal = Decimal("5000")
     max_spread: Decimal = Decimal("0.05")
 
-    # --- Sizing (sizing.py SizingConfig) ---
+    # --- Sizer selection (docs/PHASE5_DESIGN.md section 6) ---
+    # FIXED keeps sizing_rule below in play; TIERED/KELLY use app/risk/
+    # sizing_tiered.py / sizing_kelly.py instead and ignore sizing_rule.
+    sizer: str = "FIXED"
+
+    # --- Sizing (sizing.py SizingConfig) - only used when sizer=FIXED ---
     sizing_rule: str = "FIXED_FRACTION"
     bet_size: Decimal = Decimal("0.02")
     confidence_base_fraction: Decimal = Decimal("0.02")
@@ -59,6 +64,7 @@ class StrategyConfig:
         precision — engine's _get_param coerces via Decimal(str(raw)).
         """
         return {
+            "paper_sizer": self.sizer,
             "paper_min_traders": self.min_traders,
             "paper_min_weighted_score": str(self.min_score),
             "paper_min_combined_value_usd": str(self.min_combined_value),
@@ -87,6 +93,21 @@ class StrategyConfig:
 STRATEGIES: list[StrategyConfig] = [
     StrategyConfig(
         name="baseline",
+        min_traders=3,
+        min_score=Decimal("1.0"),
+        min_liquidity=Decimal("5000"),
+        bet_size=Decimal("0.02"),
+        take_profit=Decimal("0.30"),
+        stop_loss=Decimal("0.20"),
+    ),
+    StrategyConfig(
+        # Identical to baseline in every entry-filter/exit dimension except
+        # sizer - the point is a head-to-head comparison against baseline
+        # on the identical signal stream, isolating whether calibrated
+        # Kelly sizing actually beats fixed sizing (docs/PHASE5_DESIGN.md
+        # section 6).
+        name="kelly",
+        sizer="KELLY",
         min_traders=3,
         min_score=Decimal("1.0"),
         min_liquidity=Decimal("5000"),

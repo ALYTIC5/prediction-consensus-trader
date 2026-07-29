@@ -35,6 +35,14 @@ from app.db.models import (
 from app.db.session import db_session
 from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
+from app.risk.calibration import (
+    BucketStats,
+    CalibrationConfig,
+    SignalFeatures,
+    compute_bucket_stats,
+    get_p_hat,
+    load_resolved_trade_records,
+)
 from app.risk.manager import RiskManager
 from app.risk.rules import (
     OpenPosition,
@@ -44,6 +52,7 @@ from app.risk.rules import (
     RiskDecision,
     RiskRuleConfig,
 )
+from app.risk.sizing_kelly import KellySizingConfig, KellySizingRequest, size_kelly_position
 from app.risk.sizing_tiered import TieredSizingConfig, TieredSizingRequest, size_tiered_position
 
 logger = logging.getLogger(__name__)
@@ -227,10 +236,38 @@ class PortfolioConfig:
     sizer: str
     sizing: SizingConfig
     tiered_sizing: TieredSizingConfig
+    kelly_sizing: KellySizingConfig
     fill: FillConfig
     exits: ExitConfig
     risk: RiskRuleConfig
     resolution_price_threshold: Decimal
+
+
+def resolve_kelly_sizing_config(params: dict, settings: Settings) -> KellySizingConfig:
+    """docs/PHASE5_DESIGN.md section 5/9. max_position_pct mirrors
+    RiskManager's own cap, same reasoning as resolve_tiered_sizing_config.
+    """
+    g = _get_param
+    return KellySizingConfig(
+        kelly_fraction=g(params, "risk_kelly_fraction", settings.risk_kelly_fraction),
+        fee_pct=g(params, "risk_kelly_fee_pct", settings.risk_kelly_fee_pct),
+        max_position_pct=g(params, "risk_max_position_pct", settings.risk_max_position_pct),
+    )
+
+
+def resolve_calibration_config(settings: Settings) -> CalibrationConfig:
+    """Never portfolio-overridable (docs/PHASE5_DESIGN.md section 9's
+    table) - calibration is a property of the shared signal-generation
+    process across all portfolios' resolved trades, not a per-portfolio
+    choice, so this reads straight off settings with no params argument.
+    """
+    return CalibrationConfig(
+        trader_bands=tuple(map(tuple, settings.calibration_trader_bands)),
+        score_bands=tuple(map(tuple, settings.calibration_score_bands)),
+        price_bands=tuple(map(tuple, settings.calibration_price_bands)),
+        min_samples_per_bucket=settings.calibration_min_samples_per_bucket,
+        window_days=settings.calibration_window_days,
+    )
 
 
 def resolve_tiered_sizing_config(params: dict, settings: Settings) -> TieredSizingConfig:
@@ -371,10 +408,12 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
     )
     risk = resolve_risk_config(params, settings)
     tiered_sizing = resolve_tiered_sizing_config(params, settings)
+    kelly_sizing = resolve_kelly_sizing_config(params, settings)
     return PortfolioConfig(
         entry_filters=entry_filters,
         sizer=g(params, "paper_sizer", settings.risk_default_sizer),
         sizing=sizing,
+        kelly_sizing=kelly_sizing,
         tiered_sizing=tiered_sizing,
         fill=fill,
         exits=exits,
@@ -535,7 +574,12 @@ def _record_risk_denial(
 
 
 def _run_entries(
-    session: Session, portfolio: PaperPortfolio, config: PortfolioConfig, now: datetime
+    session: Session,
+    portfolio: PaperPortfolio,
+    config: PortfolioConfig,
+    now: datetime,
+    bucket_stats: dict[tuple[int, int, int], BucketStats],
+    calibration_config: CalibrationConfig,
 ) -> list[str]:
     lines: list[str] = []
 
@@ -654,11 +698,53 @@ def _run_entries(
 
         # paper_sizer picks which sizer produces the raw notional (docs/
         # PHASE5_DESIGN.md section 6): TIERED uses Stage 2's band mapping;
-        # KELLY isn't implemented yet (Stage 3), so it falls back to TIERED,
-        # same spirit as the documented per-signal calibration fallback;
-        # anything else (including "FIXED") uses the existing sizer,
-        # matching sizing.py's own fail-safe-to-FIXED convention.
-        if config.sizer in ("TIERED", "KELLY"):
+        # KELLY uses Stage 3's calibrated fraction when its signal's bucket
+        # has enough resolved history, and falls back to TIERED per-signal
+        # otherwise (never a hard failure - that's the entire point of
+        # TIERED existing as KELLY's safety net); anything else (including
+        # "FIXED") uses the existing sizer, matching sizing.py's own
+        # fail-safe-to-FIXED convention.
+        kelly_fraction_value: Decimal | None = None
+        p_hat_value: Decimal | None = None
+        edge_value: Decimal | None = None
+
+        if config.sizer == "KELLY":
+            calibration_result = get_p_hat(
+                bucket_stats,
+                SignalFeatures(
+                    distinct_traders=signal.distinct_traders,
+                    weighted_score=signal.weighted_score,
+                    average_entry_price=signal.average_entry_price,
+                ),
+                calibration_config,
+            )
+            if calibration_result is None:
+                tiered_result = size_tiered_position(
+                    TieredSizingRequest(
+                        current_bankroll=portfolio.current_bankroll,
+                        weighted_score=signal.weighted_score,
+                    ),
+                    config.tiered_sizing,
+                )
+                target_notional = tiered_result.target_notional
+                skipped_reason = tiered_result.skipped_reason
+                sizer_used = "TIERED_FALLBACK"
+            else:
+                kelly_result = size_kelly_position(
+                    KellySizingRequest(
+                        current_bankroll=portfolio.current_bankroll,
+                        p_hat=calibration_result.p_hat,
+                        fill_price=signal.average_entry_price,
+                    ),
+                    config.kelly_sizing,
+                )
+                target_notional = kelly_result.target_notional
+                skipped_reason = kelly_result.skipped_reason
+                sizer_used = "KELLY"
+                kelly_fraction_value = kelly_result.kelly_fraction_used
+                p_hat_value = calibration_result.p_hat
+                edge_value = kelly_result.edge
+        elif config.sizer == "TIERED":
             tiered_result = size_tiered_position(
                 TieredSizingRequest(
                     current_bankroll=portfolio.current_bankroll,
@@ -780,6 +866,9 @@ def _run_entries(
                 size=size,
                 slippage_paid=fill_result.slippage_paid,
                 sizer_used=sizer_used,
+                kelly_fraction=kelly_fraction_value,
+                p_hat=p_hat_value,
+                edge=edge_value,
                 entry_at=now,
             )
         )
@@ -884,11 +973,16 @@ def _run_exits(
 
 
 def _run_portfolio_cycle(
-    session: Session, portfolio: PaperPortfolio, settings: Settings, now: datetime
+    session: Session,
+    portfolio: PaperPortfolio,
+    settings: Settings,
+    now: datetime,
+    bucket_stats: dict[tuple[int, int, int], BucketStats],
+    calibration_config: CalibrationConfig,
 ) -> _CycleLog:
     config = resolve_portfolio_config(portfolio.params, settings)
 
-    entry_lines = _run_entries(session, portfolio, config, now)
+    entry_lines = _run_entries(session, portfolio, config, now, bucket_stats, calibration_config)
     open_trades = _mark_to_market(session, portfolio)
     exit_lines = _run_exits(session, portfolio, open_trades, config, now)
 
@@ -910,13 +1004,26 @@ def _run_cycle_sync(now: datetime) -> list[_CycleLog]:
     # overrides (docs/PHASE5_DESIGN.md flag 9) take effect on the very next
     # cycle, no restart required.
     settings = get_effective_settings()
+    calibration_config = resolve_calibration_config(settings)
     with db_session() as session:
+        # Computed once per cycle, shared by every KELLY portfolio - it's a
+        # property of the shared signal-generation process across all
+        # portfolios' resolved trades, not any one portfolio's own params
+        # (docs/PHASE5_DESIGN.md section 4).
+        records = load_resolved_trade_records(session, calibration_config.window_days, now)
+        bucket_stats = compute_bucket_stats(records, calibration_config)
+
         portfolios = (
             session.execute(select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)))
             .scalars()
             .all()
         )
-        return [_run_portfolio_cycle(session, portfolio, settings, now) for portfolio in portfolios]
+        return [
+            _run_portfolio_cycle(
+                session, portfolio, settings, now, bucket_stats, calibration_config
+            )
+            for portfolio in portfolios
+        ]
 
 
 async def run_cycle() -> None:

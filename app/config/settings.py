@@ -277,6 +277,12 @@ class Settings(BaseSettings):
     # design section 5. Never above 0.5 (half Kelly) - enforced below, not
     # just documented, same pattern as _validate_paper_sizing_rule.
     risk_kelly_fraction: Decimal = Decimal("0.25")
+    # Default 0 - no Polymarket trading fee schedule has been confirmed
+    # against docs.polymarket.com (CLAUDE.md: never guess a field/value),
+    # so this project assumes zero fee until one is. Set explicitly once a
+    # real schedule is confirmed; slippage needs no separate adjustment
+    # here since c is already the slippage-adjusted price (design flag 4).
+    risk_kelly_fee_pct: Decimal = Decimal("0")
 
     @model_validator(mode="after")
     def _validate_paper_fractions(self) -> "Settings":
@@ -303,6 +309,7 @@ class Settings(BaseSettings):
             "risk_daily_stop_loss_pct",
             "risk_min_bankroll_pct",
             "risk_kelly_fraction",
+            "risk_kelly_fee_pct",
         )
         for name in fields:
             value = getattr(self, name)
