@@ -47,6 +47,14 @@ class SignalCLV(Base):
     resolves unambiguously (never guessed - same convention app/paper/
     engine.py's detect_resolution already uses). One row per signal, not per
     portfolio - CLV measures the signal itself, not any one portfolio's fill.
+
+    brier_raw (docs/PHASE6_DESIGN.md workstream 4) is filled in by
+    app/optimization/brier.py alongside price_at_resolution - the Brier
+    score of entry_price against the actual 0/1 outcome (price_at_resolution
+    doubles as that outcome, since it's already exactly 1.0/0.0). There is
+    deliberately no brier_calibrated column: a bucket's calibrated p_hat
+    changes as more trades resolve, so a frozen column would silently go
+    stale - app/optimization/brier.py computes that one fresh on every call.
     """
 
     __tablename__ = "signal_clv"
@@ -58,6 +66,7 @@ class SignalCLV(Base):
     price_at_resolution: Mapped[Decimal | None] = mapped_column(Money)
     clv_horizon: Mapped[Decimal | None] = mapped_column(Money)
     clv_resolution: Mapped[Decimal | None] = mapped_column(Money)
+    brier_raw: Mapped[Decimal | None] = mapped_column(Money)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

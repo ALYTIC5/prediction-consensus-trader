@@ -1307,7 +1307,7 @@ class RiskEventRow:
 
 @dataclass(frozen=True)
 class CalibrationBucketRow:
-    trader_band: str
+    cluster_band: str
     score_band: str
     price_band: str
     n: int
@@ -1570,7 +1570,7 @@ def get_calibration_buckets() -> list[CalibrationBucketRow]:
     stats = compute_bucket_stats(records, config)
     rows = [
         CalibrationBucketRow(
-            trader_band=_band_label(trader_idx, config.trader_bands),
+            cluster_band=_band_label(cluster_idx, config.cluster_bands),
             score_band=_band_label(score_idx, config.score_bands),
             price_band=_band_label(price_idx, config.price_bands),
             n=bucket.n,
@@ -1580,9 +1580,9 @@ def get_calibration_buckets() -> list[CalibrationBucketRow]:
             ci_high=bucket.ci_high,
             trusted=bucket.n >= config.min_samples_per_bucket,
         )
-        for (trader_idx, score_idx, price_idx), bucket in stats.items()
+        for (cluster_idx, score_idx, price_idx), bucket in stats.items()
     ]
-    return sorted(rows, key=lambda r: (r.trader_band, r.score_band, r.price_band))
+    return sorted(rows, key=lambda r: (r.cluster_band, r.score_band, r.price_band))
 
 
 def get_sizer_used_breakdown() -> list[SizerBreakdownRow]:

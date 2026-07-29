@@ -1,12 +1,30 @@
 """Stage 3a: consensus-to-probability calibration.
 
-See docs/PHASE5_DESIGN.md section 4. The rule this whole stage is built
-around: we do not invent a win probability, we measure one, from this
-project's own resolved paper trades. Split into a pure core (bucketing,
-Wilson interval, the bucket lookup) and a thin DB loader
-(load_resolved_trade_records) - the same split app/paper/sizing.py and
-app/paper/engine.py use everywhere else, so the statistics themselves are
-unit-testable without a database.
+See docs/PHASE5_DESIGN.md section 4, formalised by docs/PHASE6_DESIGN.md
+workstream 4. The rule this whole stage is built around: we do not invent a
+win probability, we measure one, from this project's own resolved paper
+trades. Split into a pure core (bucketing, Wilson interval, the bucket
+lookup) and a thin DB loader (load_resolved_trade_records) - the same split
+app/paper/sizing.py and app/paper/engine.py use everywhere else, so the
+statistics themselves are unit-testable without a database.
+
+Bucketing is by INDEPENDENT-CLUSTER count, not raw wallet count, as of
+Phase 6 workstream 1: Signal.distinct_traders was redefined in place at
+signal-creation time to count clusters (see app/consensus/engine.py's
+_weighted_score() docstring) - this module just reads that same column,
+renamed here to cluster_count for clarity, with no separate migration
+needed. Resolved trades from BEFORE that redefinition shipped still carry
+raw wallet counts in the same column; there is no way to distinguish them
+retroactively (docs/PHASE6_DESIGN.md flag 2), but the rolling window below
+already ages them out of every bucket on its own - no special-case code
+needed, the same mechanism that already handles regime change handles this
+cutover for free.
+
+Because Kelly sizing (Stage 3b, app/risk/sizing_kelly.py) reads p_hat
+straight from get_p_hat() below, every improvement this bucketing gets -
+cluster-based independence included - flows directly into Kelly's sizing
+decisions with no separate wiring; see resolve_calibration_config() in
+app/paper/engine.py for where get_p_hat()'s inputs are actually assembled.
 
 "Resolved" means CLOSED with exit_reason == market_resolved specifically -
 not any CLOSED trade. A trade closed by take_profit/stop_loss/signal_expiry
@@ -50,7 +68,7 @@ class ResolvedTradeRecord:
     values, not an ORM row, so compute_bucket_stats stays DB-free.
     """
 
-    distinct_traders: int
+    cluster_count: int
     weighted_score: Decimal
     average_entry_price: Decimal
     won: bool
@@ -60,7 +78,7 @@ class ResolvedTradeRecord:
 class SignalFeatures:
     """The subset of a signal's fields a bucket lookup needs."""
 
-    distinct_traders: int
+    cluster_count: int
     weighted_score: Decimal
     average_entry_price: Decimal
 
@@ -72,7 +90,7 @@ class CalibrationConfig:
     the shared signal-generation process, not a per-portfolio choice.
     """
 
-    trader_bands: tuple[tuple[Decimal, Decimal], ...]
+    cluster_bands: tuple[tuple[Decimal, Decimal], ...]
     score_bands: tuple[tuple[Decimal, Decimal], ...]
     price_bands: tuple[tuple[Decimal, Decimal], ...]
     min_samples_per_bucket: int
@@ -117,18 +135,21 @@ def _band_index(value: Decimal, bands: tuple[tuple[Decimal, Decimal], ...]) -> i
     return len(bands) - 1
 
 
-def _bucket_key(
-    distinct_traders: int,
+def bucket_key(
+    cluster_count: int,
     weighted_score: Decimal,
     average_entry_price: Decimal,
     config: CalibrationConfig,
 ) -> BucketKey | None:
-    trader_idx = _band_index(Decimal(distinct_traders), config.trader_bands)
+    """Public (unlike _band_index) - app/optimization/brier.py also needs
+    this to group Brier scores by the same buckets calibration itself uses.
+    """
+    cluster_idx = _band_index(Decimal(cluster_count), config.cluster_bands)
     score_idx = _band_index(weighted_score, config.score_bands)
     price_idx = _band_index(average_entry_price, config.price_bands)
-    if trader_idx is None or score_idx is None or price_idx is None:
+    if cluster_idx is None or score_idx is None or price_idx is None:
         return None
-    return (trader_idx, score_idx, price_idx)
+    return (cluster_idx, score_idx, price_idx)
 
 
 def wilson_interval(wins: int, n: int, z: Decimal) -> tuple[Decimal, Decimal]:
@@ -159,8 +180,8 @@ def compute_bucket_stats(
     """
     grouped: dict[BucketKey, list[bool]] = {}
     for record in records:
-        key = _bucket_key(
-            record.distinct_traders, record.weighted_score, record.average_entry_price, config
+        key = bucket_key(
+            record.cluster_count, record.weighted_score, record.average_entry_price, config
         )
         if key is None:
             continue
@@ -185,8 +206,8 @@ def get_p_hat(
     a rate. None is the caller's (app/paper/engine.py's) signal to fall back
     to Stage 2 tiered sizing for this one signal, not the whole portfolio.
     """
-    key = _bucket_key(
-        features.distinct_traders, features.weighted_score, features.average_entry_price, config
+    key = bucket_key(
+        features.cluster_count, features.weighted_score, features.average_entry_price, config
     )
     if key is None:
         return None
@@ -224,7 +245,11 @@ def load_resolved_trade_records(
     ).all()
     return [
         ResolvedTradeRecord(
-            distinct_traders=row.distinct_traders,
+            # Signal.distinct_traders IS the cluster count for any signal
+            # created after the Phase 6 workstream 1 cutover - see the
+            # module docstring for why older, pre-cutover rows need no
+            # special handling here (the rolling window ages them out).
+            cluster_count=row.distinct_traders,
             weighted_score=row.weighted_score,
             average_entry_price=row.average_entry_price,
             won=(row.exit_price == Decimal("1.0")),

@@ -262,7 +262,7 @@ def resolve_calibration_config(settings: Settings) -> CalibrationConfig:
     choice, so this reads straight off settings with no params argument.
     """
     return CalibrationConfig(
-        trader_bands=tuple(map(tuple, settings.calibration_trader_bands)),
+        cluster_bands=tuple(map(tuple, settings.calibration_cluster_bands)),
         score_bands=tuple(map(tuple, settings.calibration_score_bands)),
         price_bands=tuple(map(tuple, settings.calibration_price_bands)),
         min_samples_per_bucket=settings.calibration_min_samples_per_bucket,
@@ -709,10 +709,16 @@ def _run_entries(
         edge_value: Decimal | None = None
 
         if config.sizer == "KELLY":
+            # signal.distinct_traders IS the independent-cluster count as of
+            # Phase 6 workstream 1 (see app/consensus/engine.py's
+            # _weighted_score()) - Kelly's p_hat lookup is cluster-aware for
+            # free, with no change needed here beyond this field rename
+            # (docs/PHASE6_DESIGN.md workstream 4's "confirm Kelly reads the
+            # improved buckets").
             calibration_result = get_p_hat(
                 bucket_stats,
                 SignalFeatures(
-                    distinct_traders=signal.distinct_traders,
+                    cluster_count=signal.distinct_traders,
                     weighted_score=signal.weighted_score,
                     average_entry_price=signal.average_entry_price,
                 ),

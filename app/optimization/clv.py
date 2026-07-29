@@ -27,6 +27,7 @@ from app.config.effective import get_effective_settings
 from app.config.settings import Settings
 from app.db.models import Market, PriceSnapshot, Signal, SignalCLV, Wallet, WalletCluster
 from app.db.session import db_session
+from app.optimization.brier import run_brier_updates
 from app.paper.engine import ResolutionOutcome, detect_resolution
 
 logger = logging.getLogger(__name__)
@@ -270,10 +271,14 @@ def run_clv_updates(settings: Settings) -> ClvUpdateSummary:
 async def run_clv_job() -> None:
     """Scheduler entrypoint - same convention as every other Phase 5/6
     periodic job (fetch effective settings fresh, run the blocking DB work
-    in a thread).
+    in a thread). Also runs the Brier backfill (docs/PHASE6_DESIGN.md
+    workstream 4) right after - brier_raw only has something new to fill
+    once this same pass's resolution fill has run, so there's no value in
+    a separate schedule for it.
     """
     settings = get_effective_settings()
     await asyncio.to_thread(run_clv_updates, settings)
+    await asyncio.to_thread(run_brier_updates)
 
 
 # --- Aggregation - overall, per cluster, per weighted_score band ---

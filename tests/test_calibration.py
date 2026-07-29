@@ -21,7 +21,7 @@ from app.risk.calibration import (
 )
 
 DEFAULT_CONFIG = CalibrationConfig(
-    trader_bands=(
+    cluster_bands=(
         (Decimal("2"), Decimal("3")),
         (Decimal("3"), Decimal("5")),
         (Decimal("5"), Decimal("999999")),
@@ -42,13 +42,13 @@ DEFAULT_CONFIG = CalibrationConfig(
 
 
 def _record(
-    distinct_traders: int = 3,
+    cluster_count: int = 3,
     weighted_score: Decimal = Decimal("1.2"),
     average_entry_price: Decimal = Decimal("0.5"),
     won: bool = True,
 ) -> ResolvedTradeRecord:
     return ResolvedTradeRecord(
-        distinct_traders=distinct_traders,
+        cluster_count=cluster_count,
         weighted_score=weighted_score,
         average_entry_price=average_entry_price,
         won=won,
@@ -56,12 +56,12 @@ def _record(
 
 
 def _features(
-    distinct_traders: int = 3,
+    cluster_count: int = 3,
     weighted_score: Decimal = Decimal("1.2"),
     average_entry_price: Decimal = Decimal("0.5"),
 ) -> SignalFeatures:
     return SignalFeatures(
-        distinct_traders=distinct_traders,
+        cluster_count=cluster_count,
         weighted_score=weighted_score,
         average_entry_price=average_entry_price,
     )
@@ -90,6 +90,24 @@ def test_records_sharing_all_three_bands_are_pooled_into_one_bucket():
     assert bucket.n == 5
     assert bucket.wins == 3
     assert bucket.p_hat == Decimal("0.6")
+
+
+def test_bucketing_keys_on_cluster_count_not_raw_wallet_count():
+    """docs/PHASE6_DESIGN.md workstream 1/4: bucketing is by independent
+    CLUSTER count. A syndicate of 5 wallets that Workstream 1 collapses to
+    1 cluster must bucket as cluster_count=1 (below the lowest cluster
+    band's min of 2 here - not bucketable at all), not as 5 wallets landing
+    comfortably in the "5+" band the way raw wallet counting would.
+    """
+    five_wallets_one_cluster = _record(cluster_count=1, won=True)
+    stats = compute_bucket_stats([five_wallets_one_cluster] * 10, DEFAULT_CONFIG)
+    # cluster_count=1 is below the lowest cluster band (2-3) - correctly
+    # un-bucketable, proving the field really does drive bucketing.
+    assert stats == {}
+
+    five_independent_clusters = _record(cluster_count=5, won=True)
+    stats = compute_bucket_stats([five_independent_clusters] * 10, DEFAULT_CONFIG)
+    assert len(stats) == 1  # lands in the 5+ band
 
 
 def test_record_below_the_lowest_band_on_any_dimension_is_dropped():
@@ -149,10 +167,10 @@ def test_empty_bucket_returns_none():
 
 
 def test_features_below_lowest_band_return_none_even_with_rich_stats():
-    records = [_record(distinct_traders=3, won=True)] * 20
+    records = [_record(cluster_count=3, won=True)] * 20
     stats = compute_bucket_stats(records, DEFAULT_CONFIG)
-    # distinct_traders=1 is below the lowest trader band's min (2).
-    below = _features(distinct_traders=1)
+    # cluster_count=1 is below the lowest cluster band's min (2).
+    below = _features(cluster_count=1)
     assert get_p_hat(stats, below, DEFAULT_CONFIG) is None
 
 
@@ -170,7 +188,7 @@ def test_recency_window_changes_p_hat_when_stale_trades_are_excluded():
     not just that a setting exists.
     """
     config = CalibrationConfig(
-        trader_bands=DEFAULT_CONFIG.trader_bands,
+        cluster_bands=DEFAULT_CONFIG.cluster_bands,
         score_bands=DEFAULT_CONFIG.score_bands,
         price_bands=DEFAULT_CONFIG.price_bands,
         min_samples_per_bucket=2,

@@ -103,7 +103,7 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th>Traders</th>
+          <th>Clusters</th>
           <th>Score</th>
           <th>Price</th>
           <th class="num">n</th>
@@ -116,7 +116,7 @@
       <tbody>
         {% for b in calibration_buckets %}
         <tr>
-          <td>{{ b.trader_band }}</td>
+          <td>{{ b.cluster_band }}</td>
           <td>{{ b.score_band }}</td>
           <td>{{ b.price_band }}</td>
           <td class="num">{{ b.n }}</td>

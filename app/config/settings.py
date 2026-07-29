@@ -263,7 +263,10 @@ class Settings(BaseSettings):
     # across all portfolios' resolved trades, not a per-portfolio choice.
     calibration_min_samples_per_bucket: int = 30
     calibration_window_days: int = 90
-    calibration_trader_bands: list[tuple[Decimal, Decimal]] = Field(
+    # Renamed from calibration_trader_bands (docs/PHASE6_DESIGN.md workstream
+    # 4) - bucketing is by independent-cluster count as of Phase 6 workstream
+    # 1, not raw wallet count; see app/risk/calibration.py's module docstring.
+    calibration_cluster_bands: list[tuple[Decimal, Decimal]] = Field(
         default_factory=lambda: [
             (Decimal("2"), Decimal("3")),
             (Decimal("3"), Decimal("5")),
@@ -433,7 +436,7 @@ class Settings(BaseSettings):
         fraction_for()/bucket lookups silently fall through to nothing.
         """
         two_tuple_fields = (
-            "calibration_trader_bands",
+            "calibration_cluster_bands",
             "calibration_score_bands",
             "calibration_price_bands",
         )

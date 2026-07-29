@@ -193,7 +193,7 @@ def test_sparse_bucket_falls_back_to_tiered_sizing():
     which is reserved for a portfolio that chose it deliberately).
     """
     calibration_config = CalibrationConfig(
-        trader_bands=((Decimal("2"), Decimal("999")),),
+        cluster_bands=((Decimal("2"), Decimal("999")),),
         score_bands=((Decimal("1.0"), Decimal("999")),),
         price_bands=((Decimal("0"), Decimal("1")),),
         min_samples_per_bucket=30,
@@ -202,13 +202,13 @@ def test_sparse_bucket_falls_back_to_tiered_sizing():
     # Only 2 resolved trades in this bucket - far below the 30-sample gate.
     records = [
         ResolvedTradeRecord(
-            distinct_traders=3,
+            cluster_count=3,
             weighted_score=Decimal("1.5"),
             average_entry_price=Decimal("0.5"),
             won=True,
         ),
         ResolvedTradeRecord(
-            distinct_traders=3,
+            cluster_count=3,
             weighted_score=Decimal("1.5"),
             average_entry_price=Decimal("0.5"),
             won=False,
@@ -216,7 +216,7 @@ def test_sparse_bucket_falls_back_to_tiered_sizing():
     ]
     bucket_stats = compute_bucket_stats(records, calibration_config)
     features = SignalFeatures(
-        distinct_traders=3, weighted_score=Decimal("1.5"), average_entry_price=Decimal("0.5")
+        cluster_count=3, weighted_score=Decimal("1.5"), average_entry_price=Decimal("0.5")
     )
 
     calibration_result = get_p_hat(bucket_stats, features, calibration_config)
@@ -242,7 +242,7 @@ def test_well_calibrated_bucket_uses_kelly_not_fallback():
     result, and the caller uses KELLY, not a fallback.
     """
     calibration_config = CalibrationConfig(
-        trader_bands=((Decimal("2"), Decimal("999")),),
+        cluster_bands=((Decimal("2"), Decimal("999")),),
         score_bands=((Decimal("1.0"), Decimal("999")),),
         price_bands=((Decimal("0"), Decimal("1")),),
         min_samples_per_bucket=3,
@@ -250,7 +250,7 @@ def test_well_calibrated_bucket_uses_kelly_not_fallback():
     )
     records = [
         ResolvedTradeRecord(
-            distinct_traders=3,
+            cluster_count=3,
             weighted_score=Decimal("1.5"),
             average_entry_price=Decimal("0.5"),
             won=won,
@@ -259,7 +259,7 @@ def test_well_calibrated_bucket_uses_kelly_not_fallback():
     ]
     bucket_stats = compute_bucket_stats(records, calibration_config)
     features = SignalFeatures(
-        distinct_traders=3, weighted_score=Decimal("1.5"), average_entry_price=Decimal("0.5")
+        cluster_count=3, weighted_score=Decimal("1.5"), average_entry_price=Decimal("0.5")
     )
 
     calibration_result = get_p_hat(bucket_stats, features, calibration_config)
