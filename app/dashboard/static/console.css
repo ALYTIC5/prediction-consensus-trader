@@ -220,6 +220,84 @@ p {
   color: var(--dim);
 }
 
+/* --- Info tip: progressive-disclosure explanations. Hidden until hover/
+   focus so jargon labels stay uncluttered but every term is one hover
+   (or one Tab + nothing else) away from being explained. --- */
+
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  margin-left: var(--space-1);
+}
+
+.info-tip__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--dim);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  cursor: help;
+}
+
+.info-tip__bubble {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: max-content;
+  max-width: 220px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease, transform 120ms ease;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.info-tip:hover .info-tip__bubble,
+.info-tip:focus-within .info-tip__bubble,
+.info-tip__icon:focus .info-tip__bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Opens downward instead of upward - for tooltips near the top of a
+   scrollable container (e.g. inside .data-table-wrap), where an
+   upward-opening bubble would be clipped by the scroll box. */
+.info-tip--down .info-tip__bubble {
+  bottom: auto;
+  top: calc(100% + 6px);
+  transform: translateX(-50%) translateY(-4px);
+}
+
+.info-tip--down:hover .info-tip__bubble,
+.info-tip--down:focus-within .info-tip__bubble {
+  transform: translateX(-50%) translateY(0);
+}
+
+.info-tip:hover .info-tip__icon,
+.info-tip:focus-within .info-tip__icon {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
+
 /* --- Data table --- */
 
 .data-table {
@@ -407,7 +485,7 @@ p {
 
 .funnel__stage {
   display: grid;
-  grid-template-columns: 90px 1fr 60px;
+  grid-template-columns: 112px 1fr 60px;
   align-items: center;
   gap: var(--space-3);
 }
@@ -994,10 +1072,67 @@ button.button--quiet:hover {
   color: var(--text);
 }
 
+/* Wider label/count columns for the Risk page's guardrail bars - their
+   value labels ("$42.10 / $100.00 cap (0xabc...)") run longer than a plain
+   count ever does. */
+.funnel-bar--wide {
+  grid-template-columns: 150px 1fr 230px;
+}
+
+.funnel-bar--wide .funnel-bar__count {
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Emergency stop control (header + Risk page) --- */
+
+.emergency-stop-control {
+  display: flex;
+  align-items: center;
+}
+
+.emergency-stop-control--prominent {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.emergency-stop-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--alert);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.emergency-stop__arm-btn {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+.emergency-stop__arm-btn:hover {
+  background: rgba(242, 109, 120, 0.08);
+}
+
+.emergency-stop__arm-btn--confirm {
+  background: var(--alert);
+  color: var(--ink);
+}
+
+.emergency-stop__arm-btn--confirm:hover {
+  background: var(--alert);
+}
+
 /* --- Reduced motion: color stays, animation goes --- */
 
 @media (prefers-reduced-motion: reduce) {
-  .status-dot--fresh {
+  .status-dot--fresh,
+  .emergency-stop-tag {
     animation: none;
   }
 

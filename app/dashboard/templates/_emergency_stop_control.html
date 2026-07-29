@@ -1,0 +1,34 @@
+{# The manual kill switch, rendered in two places with the same markup:
+   the header (variant="compact", always visible, fetched via htmx on
+   every page load) and the Risk page (variant="prominent", server-
+   rendered directly). Both POST to the same two validated endpoints and
+   swap this exact fragment back in - see armEmergencyStop() in base.html
+   for the two-click confirm (arm, then submit). #}
+{% set target_id = "emergency-stop-header" if variant == "compact" else "emergency-stop-risk" %}
+{% if active %}
+<span class="emergency-stop-tag">EMERGENCY STOP ACTIVE</span>
+<form
+  hx-post="/risk/emergency-stop/resume"
+  hx-target="#{{ target_id }}"
+  hx-swap="innerHTML"
+  style="display: inline-flex; gap: var(--space-2); align-items: center; margin-left: var(--space-2);"
+>
+  <input type="hidden" name="variant" value="{{ variant }}">
+  <button type="button" class="button--quiet" data-confirm-label="Confirm resume" onclick="armEmergencyStop(this)">Resume trading</button>
+</form>
+{% else %}
+<form
+  hx-post="/risk/emergency-stop/engage"
+  hx-target="#{{ target_id }}"
+  hx-swap="innerHTML"
+  style="display: inline-flex; gap: var(--space-2); align-items: center;"
+>
+  <input type="hidden" name="variant" value="{{ variant }}">
+  <button type="button" class="emergency-stop__arm-btn" data-confirm-label="Confirm: stop all trading" onclick="armEmergencyStop(this)">Emergency stop</button>
+</form>
+{% if variant == "prominent" %}
+<p class="text-dim" style="margin: var(--space-2) 0 0; font-size: 12px;">
+  Denies all new paper entries across every portfolio immediately. Existing open positions still mark-to-market and exit normally.
+</p>
+{% endif %}
+{% endif %}

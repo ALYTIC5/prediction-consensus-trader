@@ -22,6 +22,13 @@
       <div class="header__app">POLYBOT <span class="text-dim">/ console</span></div>
       <div class="header__meta">
         <span>{{ environment | default("development") }}</span>
+        <div
+          id="emergency-stop-header"
+          class="emergency-stop-control"
+          hx-get="/fragments/emergency-stop?variant=compact"
+          hx-trigger="load, every 15s"
+          hx-swap="innerHTML"
+        ></div>
         <span id="header-heartbeat" title="checking...">
           <span class="status-dot"></span>
         </span>
@@ -37,6 +44,7 @@
       <a class="nav__link nav__link--sub {% if active_page in ('paper_overview', 'paper_detail') %}nav__link--active{% endif %}" href="/paper">Overview</a>
       <a class="nav__link nav__link--sub {% if active_page == 'paper_comparison' %}nav__link--active{% endif %}" href="/paper/comparison">Comparison</a>
       <a class="nav__link {% if active_page == 'events' %}nav__link--active{% endif %}" href="/events">Events</a>
+      <a class="nav__link {% if active_page == 'risk' %}nav__link--active{% endif %}" href="/risk">Risk</a>
       <a class="nav__link {% if active_page == 'tuning' %}nav__link--active{% endif %}" href="/tuning">Tuning</a>
       <a class="nav__link {% if active_page == 'logs' %}nav__link--active{% endif %}" href="/logs">Logs</a>
     </nav>
@@ -53,7 +61,7 @@
     // is clickable, not just the <a> text inside it.
     document.addEventListener("click", function (evt) {
       var row = evt.target.closest(".clickable-row");
-      if (!row || evt.target.closest("a")) return;
+      if (!row || evt.target.closest("a") || evt.target.closest(".info-tip")) return;
       var href = row.getAttribute("data-href");
       if (href) window.location.href = href;
     });
@@ -127,6 +135,33 @@
           freshRows.forEach(function (row) { row.classList.remove("flash"); });
         });
       });
+    }
+  </script>
+
+  <script>
+    // The emergency-stop control's two-click confirm (see
+    // _emergency_stop_control.html): first click arms the button and
+    // relabels it from data-confirm-label; a second click within 4s
+    // actually submits the form. Anywhere the button re-renders (header
+    // poll, htmx swap after either POST) starts back at the unarmed state,
+    // so a stale "confirm" label never survives past its own click.
+    function armEmergencyStop(btn) {
+      if (btn.dataset.armed === "true") {
+        btn.closest("form").requestSubmit();
+        return;
+      }
+      var originalLabel = btn.textContent;
+      btn.dataset.armed = "true";
+      btn.dataset.originalLabel = originalLabel;
+      btn.textContent = btn.dataset.confirmLabel || "Confirm";
+      btn.classList.add("emergency-stop__arm-btn--confirm");
+      setTimeout(function () {
+        if (btn.isConnected && btn.dataset.armed === "true") {
+          btn.dataset.armed = "false";
+          btn.textContent = btn.dataset.originalLabel;
+          btn.classList.remove("emergency-stop__arm-btn--confirm");
+        }
+      }, 4000);
     }
   </script>
 

@@ -36,6 +36,7 @@ from app.db.models import (
     Position,
     PositionHistory,
     PriceSnapshot,
+    RiskEvent,
     RuntimeOverride,
     Signal,
     SignalStatus,
@@ -43,7 +44,10 @@ from app.db.models import (
     Wallet,
 )
 from app.db.session import db_session
+from app.paper.engine import resolve_calibration_config, resolve_risk_config
 from app.paper.metrics import PortfolioMetrics, TradeData, compute_portfolio_metrics
+from app.risk.calibration import compute_bucket_stats, load_resolved_trade_records
+from app.risk.rules import RiskRule
 
 logger = logging.getLogger(__name__)
 
@@ -878,6 +882,7 @@ class PaperPortfolioRow:
     starting_bankroll: Decimal
     current_bankroll: Decimal
     is_active: bool
+    params: dict
 
 
 @dataclass(frozen=True)
@@ -928,7 +933,6 @@ class PaperOverviewStats:
     total_strategies: int
     active_trades: int
     total_capital: Decimal
-    total_starting_capital: Decimal
     total_realized_pnl: Decimal
     total_unrealized_pnl: Decimal
     avg_win_rate: Decimal | None
@@ -967,6 +971,7 @@ def list_portfolios() -> list[PaperPortfolioRow]:
             starting_bankroll=p.starting_bankroll,
             current_bankroll=p.current_bankroll,
             is_active=p.is_active,
+            params=p.params,
         )
         for p in rows
     ]
@@ -1115,7 +1120,6 @@ def overview_stats() -> PaperOverviewStats:
     portfolios = list_portfolios()
     active_trades = 0
     total_capital = Decimal("0")
-    total_starting_capital = Decimal("0")
     total_realized = Decimal("0")
     total_unrealized = Decimal("0")
     weighted_win_rate = Decimal("0")
@@ -1127,7 +1131,6 @@ def overview_stats() -> PaperOverviewStats:
             continue
         active_trades += metrics.open_count
         total_capital += metrics.current_bankroll
-        total_starting_capital += p.starting_bankroll
         total_realized += metrics.total_realized_pnl
         total_unrealized += metrics.unrealized_pnl
         if metrics.win_rate is not None and metrics.closed_count > 0:
@@ -1140,7 +1143,6 @@ def overview_stats() -> PaperOverviewStats:
         total_strategies=len(portfolios),
         active_trades=active_trades,
         total_capital=total_capital,
-        total_starting_capital=total_starting_capital,
         total_realized_pnl=total_realized,
         total_unrealized_pnl=total_unrealized,
         avg_win_rate=avg_win_rate,
@@ -1257,3 +1259,359 @@ def trade_statistics(portfolio_id: int) -> TradeStatistics:
         max_win_streak=max_win,
         max_lose_streak=max_lose,
     )
+
+
+# --- Risk page ---
+
+# Bar color thresholds, shared by every cap-style bar below - amber once a
+# portfolio is within 20% of a limit, alert once it's breached it. A
+# dashboard-only display rule, not a Settings field (docs/PHASE5_DESIGN.md
+# already owns the actual enforcement thresholds; this only decides when a
+# bar changes color).
+_BAR_AMBER_THRESHOLD = Decimal("0.8")
+
+RISK_RULE_NAMES: list[str] = [r.value for r in RiskRule]
+
+
+@dataclass(frozen=True)
+class RiskBar:
+    """One thin bar on the Risk page - value/cap already resolved to a
+    display string and a clamped [0, 100] percent so the template does no
+    arithmetic of its own, same split as every other query in this module.
+    """
+
+    label: str
+    value_label: str
+    pct: float
+    color: str  # "phosphor" | "amber" | "alert"
+
+
+@dataclass(frozen=True)
+class RiskGuardrailState:
+    portfolio_id: int
+    name: str
+    min_bankroll_halted: bool
+    daily_stopped: bool
+    bars: list[RiskBar]
+
+
+@dataclass(frozen=True)
+class RiskEventRow:
+    id: int
+    portfolio_name: str
+    rule: str
+    decision: str
+    reason: str
+    occurred_at: datetime
+
+
+@dataclass(frozen=True)
+class CalibrationBucketRow:
+    trader_band: str
+    score_band: str
+    price_band: str
+    n: int
+    wins: int
+    p_hat: Decimal
+    ci_low: Decimal
+    ci_high: Decimal
+    trusted: bool
+
+
+@dataclass(frozen=True)
+class SizerBreakdownRow:
+    portfolio_id: int
+    portfolio_name: str
+    counts: dict[str, int]
+
+
+def get_emergency_stop_active() -> bool:
+    return get_effective_settings().paper_emergency_stop
+
+
+def _bar_color(ratio: Decimal) -> str:
+    if ratio >= 1:
+        return "alert"
+    if ratio >= _BAR_AMBER_THRESHOLD:
+        return "amber"
+    return "phosphor"
+
+
+def _clamped_pct(ratio: Decimal) -> float:
+    return float(min(max(ratio, Decimal("0")), Decimal("1")) * 100)
+
+
+def _cap_bar(label: str, value: Decimal, cap: Decimal) -> RiskBar:
+    ratio = (value / cap) if cap > 0 else Decimal("0")
+    return RiskBar(
+        label=label,
+        value_label=f"${value:,.2f} / ${cap:,.2f} cap",
+        pct=_clamped_pct(ratio),
+        color=_bar_color(ratio),
+    )
+
+
+def _floor_bar(label: str, value: Decimal, floor: Decimal, ceiling: Decimal) -> RiskBar:
+    """Inverted from a cap bar - breach means falling below the floor, not
+    rising above it, so the bar fills with headroom-above-the-floor and
+    danger increases as that headroom shrinks toward zero.
+    """
+    span = ceiling - floor
+    headroom_ratio = ((value - floor) / span) if span > 0 else Decimal("1")
+    if value <= floor:
+        color = "alert"
+    elif headroom_ratio <= Decimal("0.2"):
+        color = "amber"
+    else:
+        color = "phosphor"
+    return RiskBar(
+        label=label,
+        value_label=f"${value:,.2f} (floor ${floor:,.2f})",
+        pct=_clamped_pct(headroom_ratio),
+        color=color,
+    )
+
+
+def _daily_pnl_bar(today_pnl: Decimal, threshold: Decimal) -> RiskBar:
+    if today_pnl >= 0:
+        return RiskBar(
+            label="Daily PnL", value_label=f"+${today_pnl:,.2f} today", pct=0.0, color="phosphor"
+        )
+    loss = -today_pnl
+    ratio = (loss / threshold) if threshold > 0 else Decimal("0")
+    return RiskBar(
+        label="Daily PnL",
+        value_label=f"-${loss:,.2f} / -${threshold:,.2f} stop",
+        pct=_clamped_pct(ratio),
+        color=_bar_color(ratio),
+    )
+
+
+def _open_count_bar(open_count: int, max_open: int) -> RiskBar:
+    ratio = (Decimal(open_count) / Decimal(max_open)) if max_open > 0 else Decimal("0")
+    return RiskBar(
+        label="Open positions",
+        value_label=f"{open_count} / {max_open}",
+        pct=_clamped_pct(ratio),
+        color=_bar_color(ratio),
+    )
+
+
+def _daily_pnl_state(
+    session: Session, portfolio: PaperPortfolio, today_start: datetime
+) -> tuple[Decimal, Decimal]:
+    """Returns (today_realized_pnl, day_start_bankroll) - the same
+    reconstruction app/paper/engine.py's RiskManager wiring uses internally
+    (docs/PHASE5_DESIGN.md flag 3), duplicated here for read-only display
+    since the engine's version is a private, DB-coupled helper rather than
+    a shared pure function.
+    """
+    today_pnl = session.execute(
+        select(func.coalesce(func.sum(PaperTrade.realized_pnl), Decimal("0"))).where(
+            PaperTrade.portfolio_id == portfolio.id,
+            PaperTrade.status == "CLOSED",
+            PaperTrade.exit_at >= today_start,
+            PaperTrade.realized_pnl.isnot(None),
+        )
+    ).scalar_one()
+    entered_today = session.execute(
+        select(PaperTrade.entry_price, PaperTrade.size).where(
+            PaperTrade.portfolio_id == portfolio.id,
+            PaperTrade.status == "OPEN",
+            PaperTrade.entry_at >= today_start,
+        )
+    ).all()
+    entered_today_cost = sum((row.entry_price * row.size for row in entered_today), Decimal("0"))
+    day_start_bankroll = portfolio.current_bankroll - today_pnl + entered_today_cost
+    return today_pnl, day_start_bankroll
+
+
+def get_risk_guardrail_states() -> list[RiskGuardrailState]:
+    """Current risk state for every active portfolio - bankroll vs its halt
+    floor, today's PnL vs the daily stop, exposure vs every cap, open count
+    vs the max. Every cap is resolved through resolve_risk_config so this
+    always matches what RiskManager actually enforces, portfolio overrides
+    included - never a display-only copy of the global defaults.
+    """
+    settings = get_effective_settings()
+    now = datetime.now(UTC)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    states: list[RiskGuardrailState] = []
+
+    with db_session() as session:
+        portfolios = (
+            session.execute(
+                select(PaperPortfolio)
+                .where(PaperPortfolio.is_active.is_(True))
+                .order_by(PaperPortfolio.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+        for p in portfolios:
+            risk_config = resolve_risk_config(p.params, settings)
+
+            open_rows = session.execute(
+                select(
+                    PaperTrade.condition_id,
+                    PaperTrade.event_slug,
+                    PaperTrade.entry_price,
+                    PaperTrade.size,
+                ).where(PaperTrade.portfolio_id == p.id, PaperTrade.status == "OPEN")
+            ).all()
+
+            total_exposure = Decimal("0")
+            by_market: dict[str, Decimal] = {}
+            by_event: dict[str, Decimal] = {}
+            for row in open_rows:
+                notional = row.entry_price * row.size
+                total_exposure += notional
+                by_market[row.condition_id] = (
+                    by_market.get(row.condition_id, Decimal("0")) + notional
+                )
+                if row.event_slug:
+                    by_event[row.event_slug] = by_event.get(row.event_slug, Decimal("0")) + notional
+
+            peak_market_id, peak_market_notional = (
+                max(by_market.items(), key=lambda kv: kv[1]) if by_market else (None, Decimal("0"))
+            )
+            peak_event_slug, peak_event_notional = (
+                max(by_event.items(), key=lambda kv: kv[1]) if by_event else (None, Decimal("0"))
+            )
+
+            today_pnl, day_start_bankroll = _daily_pnl_state(session, p, today_start)
+            daily_stop_threshold = risk_config.daily_stop_loss_pct * day_start_bankroll
+            bankroll_floor = risk_config.min_bankroll_pct * p.starting_bankroll
+
+            bars = [
+                _floor_bar("Bankroll", p.current_bankroll, bankroll_floor, p.starting_bankroll),
+                _daily_pnl_bar(today_pnl, daily_stop_threshold),
+                _cap_bar(
+                    "Total exposure",
+                    total_exposure,
+                    risk_config.max_exposure_pct * p.current_bankroll,
+                ),
+                _cap_bar(
+                    "Market peak" + (f" ({peak_market_id[:12]}…)" if peak_market_id else ""),
+                    peak_market_notional,
+                    risk_config.max_market_exposure_pct * p.current_bankroll,
+                ),
+                _cap_bar(
+                    "Correlated peak" + (f" ({peak_event_slug[:20]}…)" if peak_event_slug else ""),
+                    peak_event_notional,
+                    risk_config.max_correlated_exposure_pct * p.current_bankroll,
+                ),
+                _open_count_bar(len(open_rows), risk_config.max_open_positions),
+            ]
+
+            states.append(
+                RiskGuardrailState(
+                    portfolio_id=p.id,
+                    name=p.name,
+                    min_bankroll_halted=p.current_bankroll < bankroll_floor,
+                    daily_stopped=today_pnl <= -daily_stop_threshold,
+                    bars=bars,
+                )
+            )
+
+    return states
+
+
+def get_risk_events(
+    portfolio_id: int | None = None, rule: str | None = None, limit: int = 100
+) -> list[RiskEventRow]:
+    """The risk_events log, most recent first - every deny/resize
+    RiskManager has issued, filterable by portfolio and rule.
+    """
+    with db_session() as session:
+        query = select(RiskEvent, PaperPortfolio.name).join(
+            PaperPortfolio, RiskEvent.portfolio_id == PaperPortfolio.id
+        )
+        if portfolio_id:
+            query = query.where(RiskEvent.portfolio_id == portfolio_id)
+        if rule:
+            query = query.where(RiskEvent.rule == rule)
+        rows = session.execute(query.order_by(RiskEvent.occurred_at.desc()).limit(limit)).all()
+
+    return [
+        RiskEventRow(
+            id=event.id,
+            portfolio_name=name,
+            rule=event.rule,
+            decision=event.decision,
+            reason=event.reason,
+            occurred_at=event.occurred_at,
+        )
+        for event, name in rows
+    ]
+
+
+def _band_label(index: int, bands: tuple[tuple[Decimal, Decimal], ...]) -> str:
+    lo, hi = bands[index]
+    if index == len(bands) - 1:
+        return f"{lo}+"
+    return f"{lo}-{hi}"
+
+
+def get_calibration_buckets() -> list[CalibrationBucketRow]:
+    """Every calibration bucket with at least one resolved trade in the
+    rolling window, with its empirical hit rate, Wilson interval, and
+    whether it clears CALIBRATION_MIN_SAMPLES_PER_BUCKET - i.e. exactly what
+    a KELLY portfolio's next signal would see from get_p_hat().
+    """
+    settings = get_effective_settings()
+    config = resolve_calibration_config(settings)
+    now = datetime.now(UTC)
+
+    with db_session() as session:
+        records = load_resolved_trade_records(session, config.window_days, now)
+
+    stats = compute_bucket_stats(records, config)
+    rows = [
+        CalibrationBucketRow(
+            trader_band=_band_label(trader_idx, config.trader_bands),
+            score_band=_band_label(score_idx, config.score_bands),
+            price_band=_band_label(price_idx, config.price_bands),
+            n=bucket.n,
+            wins=bucket.wins,
+            p_hat=bucket.p_hat,
+            ci_low=bucket.ci_low,
+            ci_high=bucket.ci_high,
+            trusted=bucket.n >= config.min_samples_per_bucket,
+        )
+        for (trader_idx, score_idx, price_idx), bucket in stats.items()
+    ]
+    return sorted(rows, key=lambda r: (r.trader_band, r.score_band, r.price_band))
+
+
+def get_sizer_used_breakdown() -> list[SizerBreakdownRow]:
+    """Per-portfolio counts of which sizer actually produced each filled
+    trade's size - how often KELLY fired vs fell back to TIERED_FALLBACK.
+    """
+    with db_session() as session:
+        portfolios = (
+            session.execute(
+                select(PaperPortfolio)
+                .where(PaperPortfolio.is_active.is_(True))
+                .order_by(PaperPortfolio.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        rows = session.execute(
+            select(PaperTrade.portfolio_id, PaperTrade.sizer_used, func.count())
+            .where(PaperTrade.sizer_used.isnot(None))
+            .group_by(PaperTrade.portfolio_id, PaperTrade.sizer_used)
+        ).all()
+
+    by_portfolio: dict[int, dict[str, int]] = {}
+    for portfolio_id, sizer_used, count in rows:
+        by_portfolio.setdefault(portfolio_id, {})[sizer_used] = count
+
+    return [
+        SizerBreakdownRow(
+            portfolio_id=p.id, portfolio_name=p.name, counts=by_portfolio.get(p.id, {})
+        )
+        for p in portfolios
+    ]

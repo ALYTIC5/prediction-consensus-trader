@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}Risk - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="page-head">
+  <div class="page-head__title">Risk</div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Emergency stop</span></div>
+  <div id="emergency-stop-risk" class="emergency-stop-control emergency-stop-control--prominent">
+    {% set active = emergency_stop_active %}
+    {% set variant = "prominent" %}
+    {% include "_emergency_stop_control.html" %}
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Portfolio guardrails</span></div>
+  {% if guardrails %}
+  <div class="comparison-strip">
+    {% for g in guardrails %}
+    <div class="comparison-card">
+      <div class="comparison-card__name">
+        <a href="/paper/{{ g.portfolio_id }}" class="strategy-link">{{ g.name }}</a>
+        {% if g.min_bankroll_halted %}<span class="tag tag--alert">HALTED</span>{% endif %}
+        {% if g.daily_stopped %}<span class="tag tag--alert">DAILY STOP</span>{% endif %}
+      </div>
+      <div class="funnel-horizontal">
+        {% for bar in g.bars %}
+        <div class="funnel-bar funnel-bar--wide">
+          <span class="funnel-bar__label micro-label">{{ bar.label }}</span>
+          <span class="funnel-bar__track">
+            <span class="funnel-bar__fill funnel-bar__fill--{{ bar.color }}" style="width: {{ bar.pct }}%;"></span>
+          </span>
+          <span class="funnel-bar__count">{{ bar.value_label }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty-state">No paper portfolios yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Risk events</span></div>
+  <form method="get" action="/risk" style="display: flex; gap: var(--space-3); margin-bottom: var(--space-3);">
+    <select name="portfolio_id" onchange="this.form.submit()">
+      <option value="0" {% if selected_portfolio_id == 0 %}selected{% endif %}>All portfolios</option>
+      {% for p in portfolios %}
+      <option value="{{ p.id }}" {% if selected_portfolio_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="rule" onchange="this.form.submit()">
+      <option value="" {% if not selected_rule %}selected{% endif %}>All rules</option>
+      {% for r in rule_options %}
+      <option value="{{ r }}" {% if selected_rule == r %}selected{% endif %}>{{ r }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  {% if risk_events %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Portfolio</th>
+          <th>Rule</th>
+          <th>Decision</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in risk_events %}
+        <tr>
+          <td class="text-dim">{{ e.occurred_at | relative_time }}</td>
+          <td>{{ e.portfolio_name }}</td>
+          <td>{{ e.rule }}</td>
+          <td><span class="tag {% if e.decision == 'DENY' %}tag--alert{% else %}tag--amber{% endif %}">{{ e.decision }}</span></td>
+          <td class="text-dim">{{ e.reason }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No risk denials or resizes match this filter.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Calibration buckets</span>
+    <span class="text-dim" style="font-weight: 400; font-size: 12px;">min {{ calibration_min_samples }} samples to trust</span>
+  </div>
+  {% if calibration_buckets %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Traders</th>
+          <th>Score</th>
+          <th>Price</th>
+          <th class="num">n</th>
+          <th class="num">Wins</th>
+          <th class="num">p&#770;</th>
+          <th class="num">Wilson 95% CI</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in calibration_buckets %}
+        <tr>
+          <td>{{ b.trader_band }}</td>
+          <td>{{ b.score_band }}</td>
+          <td>{{ b.price_band }}</td>
+          <td class="num">{{ b.n }}</td>
+          <td class="num">{{ b.wins }}</td>
+          <td class="num">{{ "%.3f"|format(b.p_hat|float) }}</td>
+          <td class="num">[{{ "%.3f"|format(b.ci_low|float) }}, {{ "%.3f"|format(b.ci_high|float) }}]</td>
+          <td>
+            {% if b.trusted %}
+            <span class="tag tag--phosphor">Trusted</span>
+            {% else %}
+            <span class="tag tag--amber">Below sample</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No resolved trades yet - calibration buckets appear once trades resolve to a market outcome.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Sizer usage by portfolio</span></div>
+  {% if sizer_breakdown %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Portfolio</th>
+          <th class="num">Fixed</th>
+          <th class="num">Tiered</th>
+          <th class="num">Kelly</th>
+          <th class="num">Kelly&rarr;Tiered fallback</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sizer_breakdown %}
+        <tr>
+          <td>{{ s.portfolio_name }}</td>
+          <td class="num">{{ s.counts.get("FIXED", 0) }}</td>
+          <td class="num">{{ s.counts.get("TIERED", 0) }}</td>
+          <td class="num text-phosphor">{{ s.counts.get("KELLY", 0) }}</td>
+          <td class="num text-amber">{{ s.counts.get("TIERED_FALLBACK", 0) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No filled trades yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

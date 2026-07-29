@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros.html" import info_tip, strategy_snapshot %}
 
 {% block title %}Paper Trading - polybot console{% endblock %}
 
@@ -26,39 +27,6 @@
   <div class="count-tile">
     <div class="micro-label">Avg win rate</div>
     <div class="count-tile__value">{% if stats.avg_win_rate is not none %}{{ "%.1f"|format(stats.avg_win_rate * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</div>
-  </div>
-</div>
-
-{% set blended_roi_pct = ((stats.total_realized_pnl + stats.total_unrealized_pnl) / stats.total_starting_capital) if stats.total_starting_capital > 0 else none %}
-<div class="panel">
-  <div class="panel__title"><span>Bankroll Scale</span></div>
-  <p class="text-dim micro-label" style="margin-bottom:var(--space-3);">
-    All {{ stats.total_strategies }} strategies are seeded at $100 each today. Projected outcome if every strategy had instead been funded at the bankroll below, holding its actual % return (blended across all strategies: {{ "%.2f"|format(blended_roi_pct * 100) if blended_roi_pct is not none else 0 }}%) fixed — dollar P&L scales linearly under FIXED_FRACTION sizing, though the $1 minimum-position floor binds tighter at $100 than at $500/$1000.
-  </p>
-  <div class="data-table-wrap">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Starting bankroll (per strategy)</th>
-          <th class="num">Projected P&L (per strategy)</th>
-          <th class="num">Projected total across {{ stats.total_strategies }} strategies</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for tier in (100, 500, 1000) %}
-        {% set projected_pnl = (blended_roi_pct * tier) if blended_roi_pct is not none else none %}
-        <tr {% if tier == 100 %}class="text-phosphor"{% endif %}>
-          <td class="num">${{ "{:,.0f}".format(tier) }}{% if tier == 100 %} <span class="micro-label">(actual)</span>{% endif %}</td>
-          <td class="num {% if projected_pnl is not none and projected_pnl > 0 %}text-phosphor{% elif projected_pnl is not none and projected_pnl < 0 %}text-alert{% endif %}">
-            {% if projected_pnl is not none %}{{ "%.2f"|format(projected_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}
-          </td>
-          <td class="num">
-            {% if projected_pnl is not none %}{{ "{:,.2f}".format(projected_pnl * stats.total_strategies) }}{% else %}<span class="text-dim">—</span>{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
   </div>
 </div>
 
@@ -116,7 +84,10 @@
       <tbody>
         {% for comp in comparison %}
         <tr class="clickable-row" data-href="/paper/{{ comp.portfolio_id }}">
-          <td><a href="/paper/{{ comp.portfolio_id }}" class="strategy-link">{{ comp.name }}</a></td>
+          <td>
+            <a href="/paper/{{ comp.portfolio_id }}" class="strategy-link">{{ comp.name }}</a>
+            {% if comp.portfolio_id in params_by_portfolio_id %}{{ info_tip(strategy_snapshot(params_by_portfolio_id[comp.portfolio_id]), direction="down") }}{% endif %}
+          </td>
           <td class="num {% if comp.roi_pct is not none and comp.roi_pct > 0 %}text-phosphor{% elif comp.roi_pct is not none and comp.roi_pct < 0 %}text-alert{% endif %}">
             {% if comp.roi_pct is not none %}{{ "%.2f"|format(comp.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}
           </td>

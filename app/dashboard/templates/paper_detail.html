@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros.html" import info_tip %}
 
 {% block title %}{{ portfolio.name }} - Paper Trading - polybot console{% endblock %}
 
@@ -53,36 +54,37 @@
 <p class="text-dim micro-label" style="margin-bottom:var(--space-4);">{{ metrics.insufficient_sample_note }} — ratio-shaped statistics suppressed.</p>
 {% endif %}
 
+{% set p = portfolio.params %}
 <div class="panel">
-  <div class="panel__title"><span>Bankroll Scale</span></div>
-  <p class="text-dim micro-label" style="margin-bottom:var(--space-3);">
-    Projected outcome for this strategy's actual trade history (ROI {{ "%.2f"|format(metrics.roi_pct * 100) if metrics.roi_pct is not none else 0 }}%) at other starting bankrolls. FIXED_FRACTION sizing means dollar P&L scales linearly with bankroll; the $1 minimum-position floor binds tighter at $100 than at $500/$1000, so live behavior at larger scale may differ slightly from this projection.
+  <div class="panel__title"><span>Strategy Profile</span></div>
+  <p style="margin-bottom:0; line-height:1.6;">
+    Enters when
+    <b>{{ p.paper_min_traders }}+</b> traders agree
+    {{ info_tip("Distinct wallets that opened or added to this position, independently of each other.") }}
+    with a combined weighted score
+    {{ info_tip("Each trader's historical track record, summed across everyone in on this signal - a rough measure of how much to trust this group.") }}
+    of at least <b>{{ p.paper_min_weighted_score }}</b>,
+    in markets with at least <b>${{ "{:,.0f}".format(p.paper_min_liquidity_usd|float) }}</b> liquidity
+    and a spread
+    {{ info_tip("The gap between the best buy and sell price - a wide spread means a worse fill.") }}
+    no wider than <b>{{ "%.0f"|format(p.paper_max_spread|float * 100) }}%</b>.
   </p>
-  <div class="data-table-wrap">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Starting bankroll</th>
-          <th class="num">Projected P&L</th>
-          <th class="num">Projected ending bankroll</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for tier in (100, 500, 1000) %}
-        {% set projected_pnl = (metrics.roi_pct * tier) if metrics.roi_pct is not none else none %}
-        <tr {% if tier == portfolio.starting_bankroll %}class="text-phosphor"{% endif %}>
-          <td class="num">${{ "{:,.0f}".format(tier) }}{% if tier == portfolio.starting_bankroll %} <span class="micro-label">(actual)</span>{% endif %}</td>
-          <td class="num {% if projected_pnl is not none and projected_pnl > 0 %}text-phosphor{% elif projected_pnl is not none and projected_pnl < 0 %}text-alert{% endif %}">
-            {% if projected_pnl is not none %}{{ "%.2f"|format(projected_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}
-          </td>
-          <td class="num">
-            {% if projected_pnl is not none %}{{ "{:,.2f}".format(tier + projected_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+  <p style="margin-top:var(--space-2); line-height:1.6;">
+    Sizes each trade at
+    {% if p.paper_sizing_rule == "CONFIDENCE_WEIGHTED" %}
+    <b>{{ "%.1f"|format(p.paper_confidence_base_fraction_pct|float * 100) }}%</b> of bankroll,
+    scaled {{ "%.1f"|format(p.paper_confidence_min_multiplier|float) }}x-{{ "%.1f"|format(p.paper_confidence_max_multiplier|float) }}x by signal strength
+    {% else %}
+    a flat <b>{{ "%.1f"|format(p.paper_fixed_fraction_pct|float * 100) }}%</b> of bankroll
+    {% endif %}
+    per trade (never more than <b>{{ "%.0f"|format(p.paper_max_position_notional_pct|float * 100) }}%</b> in one position, or
+    <b>{{ "%.0f"|format(p.paper_max_total_exposure_pct|float * 100) }}%</b> across everything open at once).
+  </p>
+  <p style="margin-top:var(--space-2); margin-bottom:0; line-height:1.6;">
+    Exits at <span class="text-phosphor">+{{ "%.0f"|format(p.paper_take_profit_pct|float * 100) }}%</span> profit,
+    <span class="text-alert">-{{ "%.0f"|format(p.paper_stop_loss_pct|float * 100) }}%</span> loss,
+    or after <b>{{ p.paper_exit_on_signal_expiry_hours }}h</b> if the signal expires first.
+  </p>
 </div>
 
 <div class="detail-grid">

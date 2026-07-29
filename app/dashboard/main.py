@@ -22,9 +22,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config.adjustable import ADJUSTABLE
+from app.config.effective import get_effective_settings
 from app.config.settings import get_settings
 from app.dashboard import queries
 from app.dashboard.filters import relative_time, short_address, to_json
+
+_EMERGENCY_STOP_VARIANTS = ("compact", "prominent")
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +334,69 @@ def tuning_reset(request: Request, key: str):
     return templates.TemplateResponse(request, "_tuning_row.html", context)
 
 
+# --- Risk page ---
+
+
+@app.get("/fragments/emergency-stop")
+def emergency_stop_fragment(request: Request, variant: str = "compact"):
+    """htmx fragment backing both the header's always-visible control and
+    the Risk page's prominent one - same partial, same two POST endpoints.
+    """
+    if variant not in _EMERGENCY_STOP_VARIANTS:
+        variant = "compact"
+    context = {"active": queries.get_emergency_stop_active(), "variant": variant}
+    return templates.TemplateResponse(request, "_emergency_stop_control.html", context)
+
+
+@app.post("/risk/emergency-stop/{action}")
+def emergency_stop_action(request: Request, action: str, variant: str = Form("compact")):
+    """The console's manual kill switch. Validated through the same
+    ADJUSTABLE-registry path as every Tuning override (queries.apply_override
+    -> parse_and_validate) - never a bespoke, unvalidated write.
+    """
+    if action not in ("engage", "resume"):
+        raise HTTPException(status_code=404, detail="unknown action")
+    if variant not in _EMERGENCY_STOP_VARIANTS:
+        variant = "compact"
+
+    result = queries.apply_override(
+        "paper_emergency_stop", "true" if action == "engage" else "false"
+    )
+    if not result.ok:
+        # paper_emergency_stop is a plain bool - only reachable if the
+        # registry itself is ever misconfigured, not from any user input.
+        raise HTTPException(status_code=500, detail=result.error)
+
+    context = {"active": queries.get_emergency_stop_active(), "variant": variant}
+    return templates.TemplateResponse(request, "_emergency_stop_control.html", context)
+
+
+@app.get("/risk")
+def risk_page(request: Request, portfolio_id: int = 0, rule: str = ""):
+    """The Risk page: emergency stop control, per-portfolio guardrail
+    state, the risk_events log, and Stage 2/3 sizing/calibration insight.
+    GET here never mutates - only the emergency-stop POST above does.
+    """
+    settings = get_settings()
+    context = {
+        "active_page": "risk",
+        "environment": settings.environment,
+        "emergency_stop_active": queries.get_emergency_stop_active(),
+        "guardrails": queries.get_risk_guardrail_states(),
+        "portfolios": queries.list_portfolios(),
+        "rule_options": queries.RISK_RULE_NAMES,
+        "selected_portfolio_id": portfolio_id,
+        "selected_rule": rule,
+        "risk_events": queries.get_risk_events(
+            portfolio_id=portfolio_id or None, rule=rule or None
+        ),
+        "calibration_buckets": queries.get_calibration_buckets(),
+        "sizer_breakdown": queries.get_sizer_used_breakdown(),
+        "calibration_min_samples": get_effective_settings().calibration_min_samples_per_bucket,
+    }
+    return templates.TemplateResponse(request, "risk.html", context)
+
+
 # --- Paper trading pages ---
 
 
@@ -354,6 +420,7 @@ def paper_overview_page(request: Request):
         "stats": stats,
         "top_performers": top_performers,
         "comparison": comparison,
+        "params_by_portfolio_id": {p.id: p.params for p in portfolios},
         "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
     }
     return templates.TemplateResponse(request, "paper_overview.html", context)

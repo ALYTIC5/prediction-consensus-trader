@@ -3,6 +3,35 @@
    the Signals page render the exact same component from the exact same
    ConsensusRun row shape. #}
 
+{# A small "i" icon that reveals `text` on hover/focus - progressive
+   disclosure for jargon terms the console can't avoid using (funnel stage
+   names, strategy parameters), without permanently occupying screen space
+   with an explanation most visits don't need. See console.css .info-tip. #}
+{% macro info_tip(text, direction="up") %}
+<span class="info-tip{% if direction == 'down' %} info-tip--down{% endif %}">
+  <span class="info-tip__icon" tabindex="0">i</span>
+  <span class="info-tip__bubble">{{ text }}</span>
+</span>
+{% endmacro %}
+
+{% set funnel_stage_explanations = {
+  "events": "Raw trader activity seen this cycle - one entry per position a tracked wallet opened or added to.",
+  "groups": "Those events collapsed into distinct market + outcome pairs - one candidate per bet, however many traders made it.",
+  "market": "Candidates in a market that's still open and accepting orders.",
+  "liquidity": "Candidates in a market with enough order-book depth to trade meaningfully.",
+  "price": "Candidates not already priced near-certain (too close to 0 or 1 to be a real bet anymore).",
+  "spread": "Candidates where the bid-ask spread isn't too wide to fill at a fair price.",
+  "breadth": "Candidates enough distinct traders agree on - one whale alone isn't consensus.",
+  "quality": "Candidates where the agreeing traders' combined track record clears the bar.",
+  "conviction": "Candidates backed by enough real dollar size to count as a genuine signal, not noise.",
+} %}
+
+{# Condensed one-line strategy summary for a hover tooltip - the full,
+   readable version lives on the portfolio's own detail page; this exists
+   so a leaderboard row can answer "what makes this one different" without
+   navigating away. #}
+{% macro strategy_snapshot(p) %}Requires {{ p.paper_min_traders }}+ traders, score ≥{{ p.paper_min_weighted_score }}, ${{ "{:,.0f}".format(p.paper_min_liquidity_usd|float) }}+ liquidity. Bets {% if p.paper_sizing_rule == "CONFIDENCE_WEIGHTED" %}{{ "%.1f"|format(p.paper_confidence_base_fraction_pct|float * 100) }}% (confidence-scaled){% else %}{{ "%.1f"|format(p.paper_fixed_fraction_pct|float * 100) }}%{% endif %}/trade. Exits +{{ "%.0f"|format(p.paper_take_profit_pct|float * 100) }}%/-{{ "%.0f"|format(p.paper_stop_loss_pct|float * 100) }}%.{% endmacro %}
+
 {% macro funnel_cascade(run) %}
 {% if run is none %}
 <p class="empty-state">
@@ -29,7 +58,7 @@
   {% set width_pct = (count / max_count * 100) %}
   {% set reject_width_pct = (rejected / max_count * 100) %}
   <div class="funnel__stage">
-    <span class="funnel__label">{{ label }}</span>
+    <span class="funnel__label">{{ label }}{{ info_tip(funnel_stage_explanations[label]) }}</span>
     <span class="funnel__bar-track">
       <span class="funnel__bar" style="width: {{ width_pct }}%;"></span>
       {% if rejected > 0 %}
@@ -42,8 +71,10 @@
   <div class="funnel__stub">
     <span class="text-dim">&rarr;</span>
     <span class="text-phosphor">new {{ run.new_signals }}</span>
+    {{ info_tip("Brand-new signals this cycle - markets that cleared every filter for the first time.") }}
     <span class="text-dim">,</span>
     <span class="text-amber">reinforced {{ run.reinforced }}</span>
+    {{ info_tip("Already-active signals that got more corroborating trader activity this cycle - not new, just strengthened.") }}
   </div>
 </div>
 {% endif %}
