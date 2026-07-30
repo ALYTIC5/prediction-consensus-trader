@@ -42,6 +42,13 @@ class ContributorEvent:
     """One wallet's contribution to a candidate group - one OPENED or
     INCREASED position_history row, already resolved to an acted size and
     an entry price by the caller.
+
+    weight (docs/PHASE6_DESIGN.md workstream 3, applied per category): the
+    wallet's score IN THIS GROUP'S MARKET CATEGORY, not a flat global
+    score - resolved by the caller (app/signals/generator.py's
+    _build_groups) before this module ever sees it, so _weighted_score()
+    below stays as unaware of "category" as it is of "score" itself; it
+    only ever sums whatever weight it's handed.
     """
 
     address: str
@@ -188,6 +195,16 @@ def _weighted_score(
     events in THIS GROUP counts - not the sum. Five wallets in one cluster
     contribute exactly as much as their single strongest voice, never more;
     this is the literal fix, not a variation on it.
+
+    THIS COMPOUNDS WITH PHASE 6 WORKSTREAM 3's PER-CATEGORY SCORING. Each
+    event's weight is already that wallet's score IN THIS GROUP'S MARKET
+    CATEGORY by the time it reaches here (see ContributorEvent.weight and
+    app/signals/generator.py's _build_groups), so "the max weight within
+    each cluster" means: the cluster's single strongest voice IN THIS
+    CATEGORY - a five-wallet Sports syndicate's best Sports score drives a
+    Sports signal's weighted_score, and that same cluster's best (likely
+    low/neutral) Politics score drives a Politics signal's - never one
+    cluster's reputation in one category bleeding into another.
     ==========================================================================
     """
     max_weight_by_cluster: dict[str, Decimal] = {}

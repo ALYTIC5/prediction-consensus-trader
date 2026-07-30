@@ -142,6 +142,25 @@ class Settings(BaseSettings):
     clv_entry_delay_seconds: int = 30
     clv_update_interval_seconds: int = 3600
 
+    # --- Phase 6 workstream 3 machinery, applied per category ---
+    # See docs/PHASE6_DESIGN.md workstream 3 for the win-rate/shrinkage/
+    # decay/zombie-guard formula this reuses. That design wires the formula
+    # into the global TraderScore as a fourth component; this project's
+    # per-category extension (GMX "ROI-per-asset" lesson - skill is
+    # category-specific) applies the identical formula per (wallet,
+    # category) instead, in app/optimization/scoring_category.py, leaving
+    # TraderScore/compute_score untouched.
+    ranking_halflife_days: int = 30
+    # Virtual sample size at the population mean - shrunk_p_hat = (wins +
+    # ranking_prior_strength * population_mean) / (n + ranking_prior_strength).
+    ranking_prior_strength: Decimal = Decimal("10")
+    ranking_zombie_grace_days: int = 14
+    # Display-only "trusted" threshold (docs/PHASE6_DESIGN.md workstream 3
+    # flag 11) - never a branch in the score itself, shrinkage already
+    # produces the same effect smoothly.
+    ranking_min_resolved_trades: int = 5
+    category_scoring_interval_seconds: int = 3600
+
     # --- Phase 6 workstream 5: adaptive whale selection ---
     # See docs/PHASE6_DESIGN.md workstream 5. app/optimization/bandit.py.
     # weight_min/max are multipliers, not fractions of bankroll - deliberately
@@ -371,6 +390,11 @@ class Settings(BaseSettings):
             "clv_update_interval_seconds",
             "adaptive_min_signals",
             "adaptive_update_interval_seconds",
+            "ranking_halflife_days",
+            "ranking_prior_strength",
+            "ranking_zombie_grace_days",
+            "ranking_min_resolved_trades",
+            "category_scoring_interval_seconds",
         )
         for name in positive_fields:
             value = getattr(self, name)

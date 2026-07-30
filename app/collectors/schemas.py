@@ -86,6 +86,21 @@ class GammaEvent(PolymarketResponseModel):
     neg_risk: bool | None = Field(default=None, alias="negRisk")
 
 
+class GammaTag(PolymarketResponseModel):
+    """One entry in a Gamma Market's "tags" list.
+
+    Only present in the response when the request includes
+    include_tag=true (see app/collectors/polymarket.py's
+    get_markets_by_condition_ids) - verified live against the API, not
+    guessed: /markets with no params never returns tags at all.
+    """
+
+    id: str | None = None
+    label: str | None = None
+    slug: str | None = None
+    force_hide: bool = Field(default=False, alias="forceHide")
+
+
 class GammaMarket(PolymarketResponseModel):
     """One row from GET /markets (Gamma API).
 
@@ -113,6 +128,7 @@ class GammaMarket(PolymarketResponseModel):
     last_trade_price: Decimal | None = Field(default=None, alias="lastTradePrice")
     order_price_min_tick_size: Decimal | None = Field(default=None, alias="orderPriceMinTickSize")
     events: list[GammaEvent] = Field(default_factory=list)
+    tags: list[GammaTag] = Field(default_factory=list)
 
     outcomes: str | None = None
     outcome_prices: str | None = Field(default=None, alias="outcomePrices")

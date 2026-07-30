@@ -90,7 +90,11 @@ class PolymarketClient:
             chunk = condition_ids[i : i + self._MARKETS_CHUNK_SIZE]
             data = await self._http.get_json(
                 f"{self._settings.gamma_api_base}/markets",
-                params=[("condition_ids", cid) for cid in chunk],
+                # include_tag=true is required to get the "tags" array back
+                # at all - verified live, not guessed (see
+                # app/collectors/schemas.py's GammaTag docstring). Documented
+                # as a /markets request param in docs/API_REFERENCE.md.
+                params=[("condition_ids", cid) for cid in chunk] + [("include_tag", "true")],
             )
             markets.extend(GammaMarket.model_validate(row) for row in data)
         return markets

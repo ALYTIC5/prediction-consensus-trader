@@ -30,6 +30,12 @@ class Market(Base):
     event_slug: Mapped[str | None] = mapped_column(String(300))
     outcomes: Mapped[list[str]] = mapped_column(JSONB)
     clob_token_ids: Mapped[list[str]] = mapped_column(JSONB)
+    # Normalized from Gamma's per-market "tags" array (see
+    # app/collectors/categories.py) - one of Sports/Politics/Crypto/
+    # Pop-Culture/Other. Not nullable: every market gets a value, "Other"
+    # when nothing matches, so downstream category-keyed lookups (Workstream
+    # 3's per-category wallet ranking) never have to special-case a null.
+    category: Mapped[str] = mapped_column(String(32), server_default="Other")
     end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean)
     closed: Mapped[bool] = mapped_column(Boolean, index=True)

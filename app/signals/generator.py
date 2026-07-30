@@ -15,6 +15,7 @@ from decimal import Decimal
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.collectors.categories import DEFAULT_CATEGORY
 from app.config.effective import get_effective_settings
 from app.config.settings import Settings, get_settings
 from app.consensus.engine import (
@@ -34,11 +35,11 @@ from app.db.models import (
     PriceSnapshot,
     Signal,
     SignalStatus,
-    TraderScore,
     Wallet,
     WalletCluster,
 )
 from app.db.session import db_session
+from app.optimization.scoring_category import latest_category_scores
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +101,17 @@ def _run_cycle(now: datetime) -> _CycleResult:
         assets = {event.asset for event in events}
 
         wallets = _load_wallets(session, wallet_ids)
-        scores = _latest_scores_by_wallet(session, wallet_ids)
+        # Category-aware weighting (docs/PHASE6_DESIGN.md workstream 3,
+        # applied per category) - see _build_groups' docstring for why this
+        # replaced the flat trader_scores lookup entirely for consensus
+        # weighting purposes. TraderScore/compute_score is untouched and
+        # still drives is_tracked selection in app/consensus/scorer.py.
+        category_scores = latest_category_scores(session, wallet_ids)
         markets = _load_markets(session, condition_ids)
         prices = _latest_prices_by_asset(session, assets)
         cluster_of = _cluster_of_by_address(session, wallets)
 
-        groups = _build_groups(events, wallets, scores, markets)
+        groups = _build_groups(events, wallets, category_scores, markets)
 
         results: list[SignalDraft | Rejection] = []
         new_lines: list[str] = []
@@ -210,25 +216,6 @@ def _load_markets(session: Session, condition_ids: set[str]) -> dict[str, Market
     return {market.condition_id: market for market in rows}
 
 
-def _latest_scores_by_wallet(session: Session, wallet_ids: set[int]) -> dict[int, Decimal]:
-    """Each contributing wallet's most recent trader_scores.score."""
-    if not wallet_ids:
-        return {}
-    ranked = (
-        select(
-            TraderScore.wallet_id,
-            TraderScore.score,
-            func.row_number()
-            .over(partition_by=TraderScore.wallet_id, order_by=TraderScore.captured_at.desc())
-            .label("rn"),
-        )
-        .where(TraderScore.wallet_id.in_(wallet_ids))
-        .subquery()
-    )
-    rows = session.execute(select(ranked.c.wallet_id, ranked.c.score).where(ranked.c.rn == 1)).all()
-    return dict(rows)
-
-
 def _cluster_of_by_address(session: Session, wallets: dict[int, Wallet]) -> dict[str, str]:
     """wallet address -> wallet_clusters.cluster_id, for every wallet
     contributing to this cycle's candidate groups. A wallet absent from
@@ -284,9 +271,34 @@ def _entry_price(row: PositionHistory) -> Decimal:
 def _build_groups(
     events: list[PositionHistory],
     wallets: dict[int, Wallet],
-    scores: dict[int, Decimal],
+    category_scores: dict[tuple[int, str], Decimal],
     markets: dict[str, Market],
 ) -> list[CandidateGroup]:
+    """Builds one CandidateGroup per (condition_id, asset), each
+    contributor's weight resolved to that wallet's score IN THIS GROUP'S
+    MARKET CATEGORY (docs/PHASE6_DESIGN.md workstream 3, applied per
+    category) - not a flat global trader_scores.score.
+
+    ==========================================================================
+    THIS COMPOUNDS WITH PHASE 6 WORKSTREAM 1's CLUSTERING FIX. See
+    app/consensus/engine.py's _weighted_score() docstring for the cluster
+    side: within a cluster, only the MAX weight counts, one vote per
+    independent voice. Combined with this category-aware weight: a signal's
+    weighted_score is one vote per independent cluster, each weighted by
+    that cluster's best member's score IN THIS SIGNAL'S CATEGORY - a
+    five-wallet Sports syndicate contributes its single best Sports score to
+    a Sports signal, and that same syndicate's best (likely low/neutral)
+    Politics score to a Politics signal, never its Sports reputation
+    borrowed into an unrelated category.
+    ==========================================================================
+
+    A wallet with no row for this category (score never computed, or this
+    category has no population data yet) falls back to 0 - low/neutral,
+    the same "nothing earned yet" default the old flat-score lookup used,
+    never the wallet's global score (docs/PHASE6_DESIGN.md workstream 3: a
+    wallet's category score must reflect ITS history in that category, not
+    borrow strength from an unrelated one).
+    """
     grouped: dict[tuple[str, str], list[ContributorEvent]] = defaultdict(list)
     meta: dict[tuple[str, str], tuple[str, str]] = {}
 
@@ -295,11 +307,13 @@ def _build_groups(
         if wallet is None:
             continue
         key = (row.condition_id, row.asset)
+        market = markets.get(row.condition_id)
+        category = market.category if market is not None else DEFAULT_CATEGORY
         grouped[key].append(
             ContributorEvent(
                 address=wallet.address,
                 username=wallet.username,
-                weight=scores.get(row.wallet_id, Decimal(0)),
+                weight=category_scores.get((row.wallet_id, category), Decimal(0)),
                 event_type=row.event_type,
                 acted_size=_acted_size(row),
                 entry_price=_entry_price(row),

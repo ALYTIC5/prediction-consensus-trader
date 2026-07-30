@@ -152,10 +152,16 @@ def bucket_key(
     return (cluster_idx, score_idx, price_idx)
 
 
-def wilson_interval(wins: int, n: int, z: Decimal) -> tuple[Decimal, Decimal]:
+def wilson_interval(wins: int | Decimal, n: int | Decimal, z: Decimal) -> tuple[Decimal, Decimal]:
     """Wilson score interval for a binomial proportion - well-behaved at
     the small sample sizes this project will see for a long time, unlike a
     naive normal-approximation interval (docs/PHASE5_DESIGN.md section 4).
+
+    wins/n accept Decimal as well as int: app/optimization/scoring_category.py
+    (docs/PHASE6_DESIGN.md workstream 3's machinery, reused rather than
+    reimplemented per that doc's flag 12) feeds this a decay-weighted,
+    already-shrunk (wins, n) pair, which is fractional by construction, not
+    a raw trade count.
     """
     if n == 0:
         return (Decimal("0"), Decimal("1"))

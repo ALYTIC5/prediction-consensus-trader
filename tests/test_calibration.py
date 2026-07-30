@@ -136,6 +136,19 @@ def test_wilson_interval_widens_with_fewer_samples():
     assert (high_small - low_small) > (high_large - low_large)
 
 
+def test_wilson_interval_accepts_decimal_wins_and_n():
+    """app/optimization/scoring_category.py feeds this a decay-weighted,
+    already-shrunk (wins, n) pair - fractional by construction, not a raw
+    int trade count - so the signature widened to accept Decimal too.
+    """
+    int_low, int_high = wilson_interval(wins=5, n=10, z=Decimal("1.96"))
+    decimal_low, decimal_high = wilson_interval(
+        wins=Decimal("5"), n=Decimal("10"), z=Decimal("1.96")
+    )
+    assert decimal_low == int_low
+    assert decimal_high == int_high
+
+
 def test_wilson_interval_is_bounded_to_zero_one():
     low, high = wilson_interval(wins=0, n=3, z=Decimal("1.96"))
     assert Decimal("0") <= low <= high <= Decimal("1")

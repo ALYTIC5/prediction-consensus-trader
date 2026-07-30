@@ -13,6 +13,7 @@ from app.config.settings import get_settings
 from app.optimization.bandit import run_bandit_job
 from app.optimization.clustering import run_clustering_job
 from app.optimization.clv import run_clv_job
+from app.optimization.scoring_category import run_category_scoring_job
 from app.paper.engine import run_cycle as run_paper_cycle
 from app.scheduler.runner import PeriodicJob, run_jobs
 from app.signals.generator import generate as generate_signals
@@ -71,6 +72,11 @@ async def _run() -> None:
                 name="clustering",
                 run=run_clustering_job,
                 interval_seconds=settings.cluster_recompute_interval_hours * 3600,
+            ),
+            PeriodicJob(
+                name="category_scoring",
+                run=run_category_scoring_job,
+                interval_seconds=settings.category_scoring_interval_seconds,
             ),
             PeriodicJob(
                 name="clv",

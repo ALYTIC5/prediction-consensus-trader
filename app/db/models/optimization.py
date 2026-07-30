@@ -72,6 +72,38 @@ class SignalCLV(Base):
     )
 
 
+class TraderCategoryScore(Base):
+    """One wallet's per-category skill score - docs/PHASE6_DESIGN.md
+    workstream 3's win-rate/shrinkage/decay/zombie machinery, applied per
+    (wallet, category) instead of folded into the global TraderScore (see
+    app/optimization/scoring_category.py). Append-only, one row per wallet
+    per category per run - same "captured_at" style history TraderScore
+    already uses, not an upserted-in-place "current state" table, so a
+    wallet's category scores can be trended over time same as its overall
+    score can.
+
+    score is the Wilson lower bound of the shrunk, decay-weighted win rate
+    - low/neutral (anchored to the category's own population mean, not the
+    global one) for a wallet with little or no history in this category,
+    high only once real decayed wins accumulate. resolved_trades is the
+    decayed n that fed the score (fractional, not a raw count - each
+    qualifying position contributes 0.5 ** (age_days / halflife_days), not
+    a full 1).
+    """
+
+    __tablename__ = "trader_category_scores"
+    __table_args__ = (Index("ix_trader_category_scores_wallet_category", "wallet_id", "category"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    category: Mapped[str] = mapped_column(String(32))
+    score: Mapped[Decimal] = mapped_column(Money)
+    resolved_trades: Mapped[Decimal] = mapped_column(Money)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ClusterBanditState(Base):
     """One cluster's current Beta-Bernoulli posterior over positive-CLV
     signals, and the adaptive weight multiplier derived from it -

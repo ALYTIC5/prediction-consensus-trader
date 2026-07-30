@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.collectors.categories import normalize_category
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.schemas import GammaMarket
 from app.config.settings import Settings
@@ -109,6 +110,7 @@ def _upsert_market(session: Session, market: GammaMarket, captured_at: datetime)
         "event_slug": market.event_slug,
         "outcomes": market.parsed_outcomes,
         "clob_token_ids": market.parsed_clob_token_ids,
+        "category": normalize_category(market.tags),
         "end_date": parse_iso_datetime(market.end_date),
         "active": market.active,
         "closed": market.closed,
