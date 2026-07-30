@@ -404,6 +404,43 @@ class Settings(BaseSettings):
     # here since c is already the slippage-adjusted price (design flag 4).
     risk_kelly_fee_pct: Decimal = Decimal("0")
 
+    # --- The Scout: standalone trader-discovery service ---
+    # See docs/SCOUT_DESIGN.md. app/scout/. Fully independent settings
+    # namespace, even where a value happens to match a Phase 6 default
+    # (design flag 8) - the Scout's own tuning must never silently move
+    # the paper engine's, or vice versa.
+
+    # Stage 1: historical screen (app/scout/screening.py).
+    scout_screen_interval_hours: int = 24
+    scout_min_trades_per_day: Decimal = Decimal("5")
+    scout_activity_lookback_days: int = 14
+    scout_min_total_trades: int = 50
+    scout_min_wilson_winrate: Decimal = Decimal("0.52")
+    scout_min_profitable_week_fraction: Decimal = Decimal("0.5")
+    # Mirrors ranking_zombie_grace_days' default, independently tunable
+    # (design flag 8) - a position still open long past its market's
+    # end_date is forced into the loss side of every Stage 1 stat, not
+    # just the win rate (design flag 6).
+    scout_zombie_grace_days: int = 14
+
+    # Stage 2: forward tracking (not yet implemented - settings land now
+    # per the design doc so nothing downstream is ever a hardcoded value).
+    scout_forward_tracking_interval_seconds: int = 3600
+    scout_clv_horizon_hours: int = 24
+    scout_validation_days: int = 14
+    scout_min_forward_trades: int = 40
+    scout_validation_confirmations: int = 2
+
+    # Stage 3: decay monitoring (not yet implemented).
+    # Point-estimate threshold, not a [0,1]-bounded fraction - CLV is a
+    # price delta and can be negative (design flag 10: decay reacts to the
+    # rolling mean, not a CI bound).
+    scout_decay_threshold: Decimal = Decimal("0")
+    scout_decay_windows: int = 2
+
+    # Crowdedness integration (not yet implemented).
+    scout_crowd_penalty_weight: Decimal = Decimal("0.3")
+
     @model_validator(mode="after")
     def _validate_paper_fractions(self) -> "Settings":
         """Fields that are a fraction/percentage of a [0, 1]-bounded price
@@ -433,6 +470,9 @@ class Settings(BaseSettings):
             "risk_kelly_fraction",
             "risk_kelly_fee_pct",
             "crowd_penalty_weight",
+            "scout_min_wilson_winrate",
+            "scout_min_profitable_week_fraction",
+            "scout_crowd_penalty_weight",
         )
         for name in fields:
             value = getattr(self, name)
@@ -476,6 +516,17 @@ class Settings(BaseSettings):
             "crowd_spread_reference",
             "crowdedness_recompute_interval_hours",
             "crowd_validation_min_sample",
+            "scout_screen_interval_hours",
+            "scout_min_trades_per_day",
+            "scout_activity_lookback_days",
+            "scout_min_total_trades",
+            "scout_zombie_grace_days",
+            "scout_forward_tracking_interval_seconds",
+            "scout_clv_horizon_hours",
+            "scout_validation_days",
+            "scout_min_forward_trades",
+            "scout_validation_confirmations",
+            "scout_decay_windows",
         )
         for name in positive_fields:
             value = getattr(self, name)
