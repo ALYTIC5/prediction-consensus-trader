@@ -12,6 +12,7 @@ from app.optimization.crowdedness import (
     compute_follower_reaction,
     hidden_alpha_score,
     hidden_alpha_weighted_score,
+    interpret_crowdedness_validation,
     leaderboard_fame_score,
     market_obviousness_score,
 )
@@ -281,3 +282,88 @@ def test_weighted_score_unknown_wallet_defaults_to_no_penalty():
     contributors = [_contributor("0xA", "0.5")]
     score = hidden_alpha_weighted_score(contributors, {}, {}, Decimal("0.3"))
     assert score == Decimal("0.5")
+
+
+# --- interpret_crowdedness_validation ---
+
+
+def test_validation_insufficient_data_below_min_sample_in_low_tier():
+    result = interpret_crowdedness_validation(
+        low_clv=Decimal("0.05"),
+        low_n=5,
+        high_clv=Decimal("0.01"),
+        high_n=40,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert result.status == "insufficient_data"
+
+
+def test_validation_insufficient_data_below_min_sample_in_high_tier():
+    result = interpret_crowdedness_validation(
+        low_clv=Decimal("0.05"),
+        low_n=40,
+        high_clv=Decimal("0.01"),
+        high_n=5,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert result.status == "insufficient_data"
+
+
+def test_validation_insufficient_data_when_a_tier_has_no_clv_yet():
+    result = interpret_crowdedness_validation(
+        low_clv=None,
+        low_n=0,
+        high_clv=Decimal("0.01"),
+        high_n=40,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert result.status == "insufficient_data"
+
+
+def test_validation_validated_when_low_beats_high_with_enough_samples():
+    result = interpret_crowdedness_validation(
+        low_clv=Decimal("0.05"),
+        low_n=40,
+        high_clv=Decimal("0.01"),
+        high_n=40,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert result.status == "validated"
+
+
+def test_validation_not_helping_when_high_beats_or_ties_low():
+    result = interpret_crowdedness_validation(
+        low_clv=Decimal("0.01"),
+        low_n=40,
+        high_clv=Decimal("0.05"),
+        high_n=40,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert result.status == "not_helping"
+
+    tied = interpret_crowdedness_validation(
+        low_clv=Decimal("0.02"),
+        low_n=40,
+        high_clv=Decimal("0.02"),
+        high_n=40,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert tied.status == "not_helping"
+
+
+def test_validation_message_mentions_the_penalty_weight():
+    result = interpret_crowdedness_validation(
+        low_clv=Decimal("0.05"),
+        low_n=40,
+        high_clv=Decimal("0.01"),
+        high_n=40,
+        min_sample=30,
+        penalty_weight=Decimal("0.3"),
+    )
+    assert "0.3" in result.message

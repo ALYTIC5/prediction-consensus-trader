@@ -28,6 +28,7 @@ from app.config.settings import Settings
 from app.db.models import Market, PriceSnapshot, Signal, SignalCLV, Wallet, WalletCluster
 from app.db.session import db_session
 from app.optimization.brier import run_brier_updates
+from app.optimization.crowdedness import crowdedness_by_address
 from app.paper.resolution import ResolutionOutcome, detect_resolution
 
 logger = logging.getLogger(__name__)
@@ -400,6 +401,70 @@ def aggregate_clv_trend(
         )
         for idx, values in sorted(buckets.items())
     ]
+
+
+_CROWDEDNESS_TIER_LABELS = ("low", "medium", "high")
+
+
+def average_contributor_crowdedness(
+    contributors: list[dict], crowdedness_of: dict[str, Decimal]
+) -> Decimal:
+    """The average crowdedness across a signal's contributing wallets -
+    pure, so the bucketing this feeds (aggregate_clv_by_crowdedness_tier)
+    stays testable without a database. A contributor absent from
+    crowdedness_of (never computed yet, or not a tracked wallet) defaults
+    to 0 crowdedness - same "no penalty without evidence" convention
+    hidden_alpha_weighted_score already uses, not a reason to drop the
+    signal from the comparison. Public: contributors is never empty by the
+    time a signal exists (evaluate_group requires at least
+    consensus_min_traders), but callers should still guard the empty case
+    rather than divide by zero.
+    """
+    values = [crowdedness_of.get(c["address"], Decimal(0)) for c in contributors]
+    return sum(values, Decimal(0)) / Decimal(len(values))
+
+
+def aggregate_clv_by_crowdedness_tier(
+    session: Session, bands: list[tuple[Decimal, Decimal]], kind: str = "horizon"
+) -> list[ClvAggregate]:
+    """Buckets signals by the AVERAGE crowdedness of their contributing
+    wallets into low/medium/high tiers - docs/PHASE6_DESIGN.md workstream 7's
+    forward validation. This is the prospective test the workstream design
+    replaces the blueprint's impossible years-of-history backtest with: the
+    blueprint's central prediction is that LOW-crowdedness signals should
+    show BETTER CLV than HIGH-crowdedness ones - the direct, honest test of
+    whether the whole crowdedness idea earns its place.
+    """
+    column = _clv_column(kind)
+    rows = session.execute(
+        select(Signal.contributors, column)
+        .join(SignalCLV, SignalCLV.signal_id == Signal.id)
+        .where(column.isnot(None))
+    ).all()
+    crowdedness_of = crowdedness_by_address(session)
+
+    values_by_band: dict[int, list[Decimal]] = {}
+    for contributors, value in rows:
+        if not contributors:
+            continue
+        avg_crowdedness = average_contributor_crowdedness(contributors, crowdedness_of)
+        idx = _band_index(avg_crowdedness, bands)
+        if idx is None:
+            continue
+        values_by_band.setdefault(idx, []).append(value)
+
+    results = []
+    for idx in sorted(values_by_band):
+        label = (
+            _CROWDEDNESS_TIER_LABELS[idx] if idx < len(_CROWDEDNESS_TIER_LABELS) else f"tier{idx}"
+        )
+        values = values_by_band[idx]
+        results.append(
+            ClvAggregate(
+                label=label, n=len(values), avg_clv=sum(values, Decimal(0)) / Decimal(len(values))
+            )
+        )
+    return results
 
 
 def aggregate_clv_by_category(session: Session, kind: str = "horizon") -> list[ClvAggregate]:

@@ -188,6 +188,27 @@ class Settings(BaseSettings):
     # StrategyConfig, the only one that sets this True.
     paper_use_hidden_alpha_weighting: bool = False
 
+    # Forward validation (docs/PHASE6_DESIGN.md workstream 7 addendum):
+    # buckets signals into low/medium/high crowdedness tiers by the average
+    # crowdedness of their contributing wallets, for CLV-by-tier comparison
+    # on the Optimization dashboard - the prospective test of whether the
+    # crowdedness idea earns its place, replacing the blueprint's
+    # impossible years-of-history backtest. Mirrors calibration_price_bands'
+    # three-band shape - crowdedness is already clamped to [0,1], same as a
+    # price.
+    crowd_tier_bands: list[tuple[Decimal, Decimal]] = Field(
+        default_factory=lambda: [
+            (Decimal("0"), Decimal("0.33")),
+            (Decimal("0.33"), Decimal("0.67")),
+            (Decimal("0.67"), Decimal("1")),
+        ]
+    )
+    # Minimum signals in BOTH the low and high tiers before the dashboard's
+    # static interpretation note treats the CLV comparison as trustworthy -
+    # same statistical-honesty-floor role paper_min_trades_for_stats and
+    # calibration_min_samples_per_bucket already play elsewhere.
+    crowd_validation_min_sample: int = 30
+
     # --- Phase 6 workstream 5: adaptive whale selection ---
     # See docs/PHASE6_DESIGN.md workstream 5. app/optimization/bandit.py.
     # weight_min/max are multipliers, not fractions of bankroll - deliberately
@@ -430,6 +451,7 @@ class Settings(BaseSettings):
             "crowd_volume_reference_usd",
             "crowd_spread_reference",
             "crowdedness_recompute_interval_hours",
+            "crowd_validation_min_sample",
         )
         for name in positive_fields:
             value = getattr(self, name)
@@ -531,6 +553,7 @@ class Settings(BaseSettings):
             "calibration_cluster_bands",
             "calibration_score_bands",
             "calibration_price_bands",
+            "crowd_tier_bands",
         )
         for name in two_tuple_fields:
             bands = getattr(self, name)

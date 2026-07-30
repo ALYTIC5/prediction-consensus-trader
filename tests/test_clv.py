@@ -7,6 +7,7 @@ from decimal import Decimal
 from app.optimization.clv import (
     ResolutionClv,
     _band_index,
+    average_contributor_crowdedness,
     clv_value,
     resolve_horizon_clv,
     resolve_resolution_clv,
@@ -105,3 +106,24 @@ def test_band_index_matches_the_containing_band():
 def test_band_index_at_or_above_the_top_band_uses_the_top_band():
     bands = [(Decimal("1.0"), Decimal("1.5")), (Decimal("1.5"), Decimal("2.0"))]
     assert _band_index(Decimal("5.0"), bands) == 1
+
+
+# --- average_contributor_crowdedness: workstream 7 forward validation ---
+
+
+def test_average_crowdedness_across_contributors():
+    contributors = [{"address": "0xA"}, {"address": "0xB"}]
+    crowdedness_of = {"0xA": Decimal("0.2"), "0xB": Decimal("0.8")}
+    assert average_contributor_crowdedness(contributors, crowdedness_of) == Decimal("0.5")
+
+
+def test_average_crowdedness_missing_wallet_defaults_to_zero():
+    contributors = [{"address": "0xA"}, {"address": "0xB"}]
+    crowdedness_of = {"0xA": Decimal("1.0")}  # 0xB never computed
+    assert average_contributor_crowdedness(contributors, crowdedness_of) == Decimal("0.5")
+
+
+def test_average_crowdedness_single_contributor():
+    contributors = [{"address": "0xA"}]
+    crowdedness_of = {"0xA": Decimal("0.7")}
+    assert average_contributor_crowdedness(contributors, crowdedness_of) == Decimal("0.7")

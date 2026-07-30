@@ -26,6 +26,7 @@ from app.config.effective import get_effective_settings
 from app.config.settings import get_settings
 from app.dashboard import queries
 from app.dashboard.filters import relative_time, short_address, to_json
+from app.optimization.crowdedness import interpret_crowdedness_validation
 
 _EMERGENCY_STOP_VARIANTS = ("compact", "prominent")
 
@@ -436,16 +437,48 @@ def optimization_page(request: Request):
             }
         ],
     }
+    # docs/PHASE6_DESIGN.md workstream 7 forward validation - low/medium/
+    # high crowdedness tiers colored phosphor/amber/alert, matching the
+    # workstream's own framing (low crowdedness good, high crowdedness bad).
+    by_tier = clv_summary["by_crowdedness_tier"]
+    _TIER_COLORS = {"low": "#5CF2C7", "medium": "#FFB454", "high": "#F26D78"}
+    crowdedness_tier_chart_json = {
+        "labels": [row.label for row in by_tier],
+        "datasets": [
+            {
+                "label": "Avg CLV by crowdedness tier",
+                "data": [
+                    float(row.avg_clv) if row.avg_clv is not None else None for row in by_tier
+                ],
+                "backgroundColor": [_TIER_COLORS.get(row.label, "#8A93A6") for row in by_tier],
+            }
+        ],
+    }
+    by_tier_label = {row.label: row for row in by_tier}
+    low_tier = by_tier_label.get("low")
+    high_tier = by_tier_label.get("high")
+    crowdedness_validation = interpret_crowdedness_validation(
+        low_clv=low_tier.avg_clv if low_tier else None,
+        low_n=low_tier.n if low_tier else 0,
+        high_clv=high_tier.avg_clv if high_tier else None,
+        high_n=high_tier.n if high_tier else 0,
+        min_sample=settings.crowd_validation_min_sample,
+        penalty_weight=settings.crowd_penalty_weight,
+    )
     context = {
         "active_page": "optimization",
         "environment": settings.environment,
         "cluster_overview": queries.get_cluster_overview(),
         "clv_summary": clv_summary,
         "clv_trend_json": clv_trend_json,
+        "crowdedness_tier_chart_json": crowdedness_tier_chart_json,
+        "crowdedness_validation": crowdedness_validation,
         "brier_summary": brier_summary,
         "brier_trend_json": brier_trend_json,
         "bandit_states": queries.get_bandit_states(),
         "adaptive_min_signals": settings.adaptive_min_signals,
+        "wallet_alpha_breakdown": queries.get_wallet_alpha_breakdown(),
+        "crowd_penalty_weight": settings.crowd_penalty_weight,
     }
     return templates.TemplateResponse(request, "optimization.html", context)
 

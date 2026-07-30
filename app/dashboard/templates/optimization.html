@@ -103,6 +103,65 @@
 </div>
 
 <div class="panel">
+  <div class="panel__title"><span>CLV by crowdedness tier - forward validation</span></div>
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    Workstream 7's prospective test, replacing the impossible years-of-history
+    backtest: signals bucketed by the average crowdedness of their
+    contributing wallets. The blueprint's central prediction is that
+    low-crowdedness signals show BETTER CLV than high-crowdedness ones -
+    this chart is the direct, honest answer.
+  </p>
+  <div class="chart-wrap" style="height:220px;">
+    <canvas id="crowdedness-tier-chart"
+            data-chart-json="{{ crowdedness_tier_chart_json | tojson | safe }}"
+            style="width:100%; height:100%;">
+    </canvas>
+  </div>
+  {% if not crowdedness_tier_chart_json.labels %}
+  <p class="empty-state" style="margin-top:var(--space-3);">No crowdedness-tiered CLV yet - needs both signal_clv and wallet_crowdedness data.</p>
+  {% endif %}
+  <p class="{% if crowdedness_validation.status == 'validated' %}text-phosphor{% elif crowdedness_validation.status == 'not_helping' %}text-alert{% else %}text-dim{% endif %}"
+     style="margin-top: var(--space-3); font-size: 13px;">
+    {{ crowdedness_validation.message }}
+  </p>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Skill / crowdedness / hidden-alpha - top wallets</span></div>
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    hidden_alpha = clamp(skill_score - CROWD_PENALTY_WEIGHT ({{ crowd_penalty_weight }}) * crowdedness, 0, 1) -
+    a soft penalty, never a hard cutoff. skill_score here is each wallet's
+    overall trader_scores.score, not a per-category one.
+  </p>
+  {% if wallet_alpha_breakdown %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Wallet</th>
+          <th class="num">Skill</th>
+          <th class="num">Crowdedness</th>
+          <th class="num">Hidden alpha</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in wallet_alpha_breakdown %}
+        <tr>
+          <td class="mono">{{ w.address | short_address }}</td>
+          <td class="num">{{ "%.4f"|format(w.skill_score) }}</td>
+          <td class="num {% if w.crowdedness > 0.5 %}text-alert{% endif %}">{{ "%.4f"|format(w.crowdedness) }}</td>
+          <td class="num text-phosphor">{{ "%.4f"|format(w.hidden_alpha) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No scored wallets yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
   <div class="panel__title"><span>Brier score (trend)</span></div>
   <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
     Lower is better - 0 is a perfect prediction, 1 the worst possible one. Raw
@@ -225,8 +284,52 @@
       });
     } catch(e) {}
   }
+  function renderBar(canvasId) {
+    var canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    var raw = canvas.getAttribute('data-chart-json');
+    if (!raw) return;
+    try {
+      var data = JSON.parse(raw);
+      if (!data.labels || data.labels.length === 0) return;
+      new Chart(canvas, {
+        type: 'bar',
+        data: data,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 300 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              enabled: true,
+              backgroundColor: '#10141d',
+              titleFont: { family: 'IBM Plex Mono', size: 11 },
+              bodyFont: { family: 'IBM Plex Mono', size: 12 },
+              titleColor: '#8a93a6',
+              bodyColor: '#e6edf3',
+              borderColor: '#1c2230',
+              borderWidth: 1,
+              padding: 8
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: '#1C2230' },
+              ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+            },
+            y: {
+              grid: { color: '#1C2230' },
+              ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+            }
+          }
+        }
+      });
+    } catch(e) {}
+  }
   renderTrend('clv-trend-chart');
   renderTrend('brier-trend-chart');
+  renderBar('crowdedness-tier-chart');
 })();
 </script>
 {% endblock %}

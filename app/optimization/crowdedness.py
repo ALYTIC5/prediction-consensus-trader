@@ -429,6 +429,70 @@ async def run_crowdedness_job() -> None:
     await asyncio.to_thread(run_crowdedness_updates, settings)
 
 
+@dataclass(frozen=True)
+class CrowdednessValidation:
+    """The Optimization dashboard's static interpretation of the CLV-by-
+    crowdedness-tier comparison (docs/PHASE6_DESIGN.md workstream 7's
+    forward validation - the prospective test replacing the blueprint's
+    impossible years-of-history backtest). status is machine-readable (for
+    styling); message is the human-readable sentence rendered directly on
+    the page.
+    """
+
+    status: str  # "insufficient_data" | "validated" | "not_helping"
+    message: str
+
+
+def interpret_crowdedness_validation(
+    low_clv: Decimal | None,
+    low_n: int,
+    high_clv: Decimal | None,
+    high_n: int,
+    min_sample: int,
+    penalty_weight: Decimal,
+) -> CrowdednessValidation:
+    """The blueprint's central, honest prediction: low-crowdedness signals
+    should show BETTER CLV than high-crowdedness ones. Below min_sample in
+    EITHER tier, the comparison isn't trustworthy yet - no verdict either
+    way. At/above it: low beats high validates the penalty (keep or
+    increase CROWD_PENALTY_WEIGHT); no meaningful gap means crowdedness
+    isn't helping in this regime (reduce CROWD_PENALTY_WEIGHT toward zero) -
+    this function never recommends removing the penalty on insufficient
+    data, only on a real comparison that came back flat.
+    """
+    if low_n < min_sample or high_n < min_sample or low_clv is None or high_clv is None:
+        return CrowdednessValidation(
+            status="insufficient_data",
+            message=(
+                f"Not enough signals yet to trust this comparison (low tier "
+                f"n={low_n}, high tier n={high_n}, need >= {min_sample} in "
+                "each before drawing a conclusion)."
+            ),
+        )
+
+    if low_clv > high_clv:
+        return CrowdednessValidation(
+            status="validated",
+            message=(
+                f"Low-crowdedness CLV ({low_clv:.4f}, n={low_n}) beats "
+                f"high-crowdedness CLV ({high_clv:.4f}, n={high_n}) - the "
+                f"crowdedness penalty (CROWD_PENALTY_WEIGHT={penalty_weight}) "
+                "is earning its place. Keep it, or consider increasing it."
+            ),
+        )
+
+    return CrowdednessValidation(
+        status="not_helping",
+        message=(
+            f"No CLV advantage for low-crowdedness signals ({low_clv:.4f}, "
+            f"n={low_n}) over high-crowdedness ones ({high_clv:.4f}, "
+            f"n={high_n}) - crowdedness isn't helping in this regime yet. "
+            f"Consider reducing CROWD_PENALTY_WEIGHT (currently "
+            f"{penalty_weight}) toward zero."
+        ),
+    )
+
+
 def crowdedness_by_address(session: Session) -> dict[str, Decimal]:
     """wallet address -> current crowdedness - what the "hidden_alpha"
     portfolio's entry filter reads every cycle. A wallet absent from this

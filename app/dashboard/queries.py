@@ -44,14 +44,17 @@ from app.db.models import (
     TraderScore,
     Wallet,
     WalletCluster,
+    WalletCrowdedness,
 )
 from app.db.session import db_session
 from app.optimization.brier import aggregate_brier_raw_overall, aggregate_brier_raw_trend
 from app.optimization.clv import (
+    aggregate_clv_by_crowdedness_tier,
     aggregate_clv_by_score_band,
     aggregate_clv_overall,
     aggregate_clv_trend,
 )
+from app.optimization.crowdedness import hidden_alpha_score
 from app.paper.engine import resolve_calibration_config, resolve_risk_config
 from app.paper.metrics import PortfolioMetrics, TradeData, compute_portfolio_metrics
 from app.risk.calibration import compute_bucket_stats, load_resolved_trade_records
@@ -1729,15 +1732,89 @@ def get_bandit_states() -> list[BanditStateRow]:
 
 
 def get_clv_summary() -> dict:
-    """Overall + per-score-band average CLV, plus a trend series - the
-    Optimization page's CLV panel (docs/PHASE6_DESIGN.md workstream 2/6).
+    """Overall + per-score-band + per-crowdedness-tier average CLV, plus a
+    trend series - the Optimization page's CLV panel (docs/PHASE6_DESIGN.md
+    workstream 2/6/7). by_crowdedness_tier is the workstream 7 forward
+    validation: low/medium/high tiers by the average crowdedness of a
+    signal's contributing wallets.
     """
     settings = get_effective_settings()
     with db_session() as session:
         overall = aggregate_clv_overall(session, "horizon")
         by_band = aggregate_clv_by_score_band(session, settings.calibration_score_bands, "horizon")
+        by_crowdedness_tier = aggregate_clv_by_crowdedness_tier(
+            session, settings.crowd_tier_bands, "horizon"
+        )
         trend = aggregate_clv_trend(session, "horizon")
-    return {"overall": overall, "by_band": by_band, "trend": trend}
+    return {
+        "overall": overall,
+        "by_band": by_band,
+        "by_crowdedness_tier": by_crowdedness_tier,
+        "trend": trend,
+    }
+
+
+@dataclass(frozen=True)
+class WalletAlphaRow:
+    address: str
+    skill_score: Decimal
+    crowdedness: Decimal
+    hidden_alpha: Decimal
+
+
+def get_wallet_alpha_breakdown(limit: int = 10) -> list[WalletAlphaRow]:
+    """Top wallets by overall skill score (trader_scores.score), each with
+    its current crowdedness and the resulting hidden_alpha
+    (docs/PHASE6_DESIGN.md workstream 7) - the skill/crowdedness/hidden-
+    alpha three-way breakdown the Optimization page shows per wallet. Uses
+    the overall score, not a per-category one (Workstream 6) - wallet_
+    crowdedness itself is wallet-level, not per-category, so mixing in a
+    category-specific skill score here would need a category selector this
+    summary row doesn't have.
+    """
+    settings = get_effective_settings()
+    with db_session() as session:
+        ranked = select(
+            TraderScore.wallet_id,
+            TraderScore.score,
+            func.row_number()
+            .over(partition_by=TraderScore.wallet_id, order_by=TraderScore.captured_at.desc())
+            .label("rn"),
+        ).subquery()
+        top = session.execute(
+            select(ranked.c.wallet_id, ranked.c.score)
+            .where(ranked.c.rn == 1)
+            .order_by(ranked.c.score.desc())
+            .limit(limit)
+        ).all()
+
+        wallet_ids = [row.wallet_id for row in top]
+        addresses = dict(
+            session.execute(
+                select(Wallet.id, Wallet.address).where(Wallet.id.in_(wallet_ids))
+            ).all()
+        )
+        crowdedness_by_wallet = dict(
+            session.execute(
+                select(WalletCrowdedness.wallet_id, WalletCrowdedness.crowdedness).where(
+                    WalletCrowdedness.wallet_id.in_(wallet_ids)
+                )
+            ).all()
+        )
+
+    rows = []
+    for wallet_id, skill_score in top:
+        crowdedness = crowdedness_by_wallet.get(wallet_id, Decimal(0))
+        hidden_alpha = hidden_alpha_score(skill_score, crowdedness, settings.crowd_penalty_weight)
+        rows.append(
+            WalletAlphaRow(
+                address=addresses.get(wallet_id, str(wallet_id)),
+                skill_score=skill_score,
+                crowdedness=crowdedness,
+                hidden_alpha=hidden_alpha,
+            )
+        )
+    return rows
 
 
 def get_brier_summary() -> dict:
