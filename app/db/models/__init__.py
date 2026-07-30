@@ -8,6 +8,7 @@ from app.db.models.optimization import (
     SignalCLV,
     TraderCategoryScore,
     WalletCluster,
+    WalletCrowdedness,
 )
 from app.db.models.paper import PaperPortfolio, PaperTrade, PaperTradeStatus
 from app.db.models.positions import Position, PositionEventType, PositionHistory
@@ -42,4 +43,5 @@ __all__ = [
     "TraderScore",
     "Wallet",
     "WalletCluster",
+    "WalletCrowdedness",
 ]

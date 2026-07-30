@@ -161,6 +161,33 @@ class Settings(BaseSettings):
     ranking_min_resolved_trades: int = 5
     category_scoring_interval_seconds: int = 3600
 
+    # --- Phase 6 workstream 7: on-chain crowdedness penalty ---
+    # See docs/PHASE6_DESIGN.md workstream 7. app/optimization/crowdedness.py.
+    # On-chain data only (position_history/leaderboard_snapshots/markets) -
+    # no social/external data source, per that workstream's scope discipline.
+    crowd_reaction_window_minutes: int = 15
+    crowd_reaction_lookback_days: int = 14
+    # Average cross-cluster followers-per-open that saturates
+    # follower_reaction to 1.0 - a clamped-linear saturation (flag 17), not
+    # exponential.
+    crowd_reaction_saturation: Decimal = Decimal("5")
+    crowd_liquidity_reference_usd: Decimal = Decimal("50000")
+    crowd_volume_reference_usd: Decimal = Decimal("20000")
+    crowd_spread_reference: Decimal = Decimal("0.10")
+    # Must sum to 1.0 - validated below, same convention as
+    # _validate_score_weights.
+    crowd_weight_reaction: Decimal = Decimal("0.5")
+    crowd_weight_fame: Decimal = Decimal("0.3")
+    crowd_weight_obvious: Decimal = Decimal("0.2")
+    # Soft penalty (subtracted, never a hard cutoff) - hidden_alpha =
+    # clamp(skill_score - crowd_penalty_weight * crowdedness, 0, 1).
+    crowd_penalty_weight: Decimal = Decimal("0.3")
+    crowdedness_recompute_interval_hours: int = 24
+    # Portfolio-overridable (paper_use_hidden_alpha_weighting in a
+    # portfolio's params) - see app/paper/strategies.py's "hidden_alpha"
+    # StrategyConfig, the only one that sets this True.
+    paper_use_hidden_alpha_weighting: bool = False
+
     # --- Phase 6 workstream 5: adaptive whale selection ---
     # See docs/PHASE6_DESIGN.md workstream 5. app/optimization/bandit.py.
     # weight_min/max are multipliers, not fractions of bankroll - deliberately
@@ -361,6 +388,7 @@ class Settings(BaseSettings):
             "risk_min_bankroll_pct",
             "risk_kelly_fraction",
             "risk_kelly_fee_pct",
+            "crowd_penalty_weight",
         )
         for name in fields:
             value = getattr(self, name)
@@ -395,6 +423,13 @@ class Settings(BaseSettings):
             "ranking_zombie_grace_days",
             "ranking_min_resolved_trades",
             "category_scoring_interval_seconds",
+            "crowd_reaction_window_minutes",
+            "crowd_reaction_lookback_days",
+            "crowd_reaction_saturation",
+            "crowd_liquidity_reference_usd",
+            "crowd_volume_reference_usd",
+            "crowd_spread_reference",
+            "crowdedness_recompute_interval_hours",
         )
         for name in positive_fields:
             value = getattr(self, name)
@@ -529,6 +564,21 @@ class Settings(BaseSettings):
                 f"{total} (month={self.score_weight_month}, "
                 f"all_time={self.score_weight_all_time}, "
                 f"consistency={self.score_weight_consistency})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_crowd_weights(self) -> "Settings":
+        """docs/PHASE6_DESIGN.md workstream 7 - a silent weight mis-sum
+        would quietly under/over-weight crowdedness's three components,
+        same reasoning as _validate_score_weights.
+        """
+        total = self.crowd_weight_reaction + self.crowd_weight_fame + self.crowd_weight_obvious
+        if total != Decimal("1.0"):
+            raise ValueError(
+                "crowd weights must sum to 1.0, got "
+                f"{total} (reaction={self.crowd_weight_reaction}, "
+                f"fame={self.crowd_weight_fame}, obvious={self.crowd_weight_obvious})"
             )
         return self
 

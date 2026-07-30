@@ -104,6 +104,35 @@ class TraderCategoryScore(Base):
     )
 
 
+class WalletCrowdedness(Base):
+    """One wallet's on-chain crowdedness score - docs/PHASE6_DESIGN.md
+    workstream 7. Current-state, not append-only (flag 20): one row per
+    wallet, deleted and reinserted on every daily
+    app/optimization/crowdedness.py run, same shape as WalletCluster and
+    ClusterBanditState - nothing here needs trending, only a live number
+    the dashboard shows alongside a wallet's skill score.
+
+    follower_reaction/leaderboard_fame/market_obviousness are the three
+    [0,1] components; crowdedness is their configured weighted sum, also
+    [0,1]. hidden_alpha is deliberately NOT a column here (flag 21) - it
+    combines this row's crowdedness with a signal's own (often
+    per-category, post-Workstream-6) skill_score fresh at the point of use,
+    computed by hidden_alpha_score()/hidden_alpha_weighted_score() in
+    app/optimization/crowdedness.py, never stored.
+    """
+
+    __tablename__ = "wallet_crowdedness"
+
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"), primary_key=True)
+    follower_reaction: Mapped[Decimal] = mapped_column(Money)
+    leaderboard_fame: Mapped[Decimal] = mapped_column(Money)
+    market_obviousness: Mapped[Decimal] = mapped_column(Money)
+    crowdedness: Mapped[Decimal] = mapped_column(Money)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ClusterBanditState(Base):
     """One cluster's current Beta-Bernoulli posterior over positive-CLV
     signals, and the adaptive weight multiplier derived from it -

@@ -35,6 +35,7 @@ from app.db.models import (
 from app.db.session import db_session
 from app.optimization.bandit import effective_weighted_score, load_multipliers
 from app.optimization.clv import address_to_cluster_map
+from app.optimization.crowdedness import crowdedness_by_address, hidden_alpha_weighted_score
 from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
 from app.paper.resolution import ResolutionOutcome, detect_resolution
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
@@ -216,6 +217,12 @@ class PortfolioConfig:
     # docs/PHASE6_DESIGN.md workstream 5 / flag 14 - "adaptive" is the only
     # seeded portfolio that sets this True.
     use_adaptive_weighting: bool
+    # docs/PHASE6_DESIGN.md workstream 7 / flag 22 - "hidden_alpha" is the
+    # only seeded portfolio that sets this True. Not tested or supported in
+    # combination with use_adaptive_weighting above (see _run_entries);
+    # hidden_alpha wins if both are somehow set.
+    use_hidden_alpha_weighting: bool
+    crowd_penalty_weight: Decimal
 
 
 def resolve_kelly_sizing_config(params: dict, settings: Settings) -> KellySizingConfig:
@@ -397,6 +404,10 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
         use_adaptive_weighting=g(
             params, "paper_use_adaptive_weighting", settings.paper_use_adaptive_weighting
         ),
+        use_hidden_alpha_weighting=g(
+            params, "paper_use_hidden_alpha_weighting", settings.paper_use_hidden_alpha_weighting
+        ),
+        crowd_penalty_weight=g(params, "crowd_penalty_weight", settings.crowd_penalty_weight),
     )
 
 
@@ -560,6 +571,7 @@ def _run_entries(
     calibration_config: CalibrationConfig,
     cluster_of: dict[str, str],
     multiplier_of: dict[str, Decimal],
+    crowdedness_of: dict[str, Decimal],
 ) -> list[str]:
     lines: list[str] = []
 
@@ -640,11 +652,23 @@ def _run_entries(
         # row itself, is completely untouched - this never forks signal
         # generation, it only changes what THIS portfolio's own filter
         # compares against.
-        entry_weighted_score = (
-            effective_weighted_score(signal.contributors, cluster_of, multiplier_of)
-            if config.use_adaptive_weighting
-            else signal.weighted_score
-        )
+        #
+        # docs/PHASE6_DESIGN.md workstream 7 / flag 22 - "hidden_alpha" does
+        # the same thing, but subtracts each contributor's own live
+        # crowdedness penalty instead of applying a cluster multiplier
+        # (hidden_alpha_weighted_score - see app/optimization/crowdedness.py).
+        # Sizing is untouched either way; only this filter's comparison
+        # changes.
+        if config.use_hidden_alpha_weighting:
+            entry_weighted_score = hidden_alpha_weighted_score(
+                signal.contributors, cluster_of, crowdedness_of, config.crowd_penalty_weight
+            )
+        elif config.use_adaptive_weighting:
+            entry_weighted_score = effective_weighted_score(
+                signal.contributors, cluster_of, multiplier_of
+            )
+        else:
+            entry_weighted_score = signal.weighted_score
 
         passed, filter_reason = passes_entry_filters(
             SignalMetrics(
@@ -981,11 +1005,20 @@ def _run_portfolio_cycle(
     calibration_config: CalibrationConfig,
     cluster_of: dict[str, str],
     multiplier_of: dict[str, Decimal],
+    crowdedness_of: dict[str, Decimal],
 ) -> _CycleLog:
     config = resolve_portfolio_config(portfolio.params, settings)
 
     entry_lines = _run_entries(
-        session, portfolio, config, now, bucket_stats, calibration_config, cluster_of, multiplier_of
+        session,
+        portfolio,
+        config,
+        now,
+        bucket_stats,
+        calibration_config,
+        cluster_of,
+        multiplier_of,
+        crowdedness_of,
     )
     open_trades = _mark_to_market(session, portfolio)
     exit_lines = _run_exits(session, portfolio, open_trades, config, now)
@@ -1023,6 +1056,10 @@ def _run_cycle_sync(now: datetime) -> list[_CycleLog]:
         # need to be conditional (docs/PHASE6_DESIGN.md workstream 5).
         cluster_of = address_to_cluster_map(session)
         multiplier_of = load_multipliers(session)
+        # docs/PHASE6_DESIGN.md workstream 7 - same "cheap to build, shared
+        # by every portfolio" reasoning as cluster_of/multiplier_of above;
+        # only "hidden_alpha" actually reads it.
+        crowdedness_of = crowdedness_by_address(session)
 
         portfolios = (
             session.execute(select(PaperPortfolio).where(PaperPortfolio.is_active.is_(True)))
@@ -1039,6 +1076,7 @@ def _run_cycle_sync(now: datetime) -> list[_CycleLog]:
                 calibration_config,
                 cluster_of,
                 multiplier_of,
+                crowdedness_of,
             )
             for portfolio in portfolios
         ]

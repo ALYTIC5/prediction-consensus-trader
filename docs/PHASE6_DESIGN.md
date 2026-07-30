@@ -187,6 +187,80 @@ in this phase adds a code path that reacts to a single price tick.
     already exists, so there's a gap before it in the doc sequence. Named
     this `PHASE6_DESIGN.md` anyway, per explicit instruction - nothing in
     Phase 8's scope (console pages) overlaps these five workstreams.
+16. **(Workstream 7) "Same asset" already encodes "same direction/outcome" -
+    there is no separate direction filter to add.** The crowdedness prompt's
+    mitigation for coincidental co-trading asks for matching a reaction in
+    "the SAME direction/outcome... within a tight window." In this schema
+    `PositionHistory.asset` already IS the per-outcome CLOB token id - a
+    market's Yes and No outcomes are different assets entirely. Two wallets
+    whose `OPENED` events share an asset are, by construction, on the same
+    side of the same market. Decision: follower-matching keys on asset
+    alone; "same asset" and "same direction" are the same condition here,
+    not two.
+17. **(Workstream 7) `follower_reaction`'s "sample" is every `OPENED` event
+    in a settings-bounded lookback window, not a literal random subsample.**
+    A randomized draw would make "why is this wallet's crowdedness X"
+    unanswerable without separately recording which rows happened to be
+    picked - the same auditability preference flags 6 and 10 already
+    established for this project (a bounded, reproducible window over a
+    smoother-but-opaque mechanism).
+18. **(Workstream 7) Follower-counting is a new, simpler primitive, not a
+    reuse of `build_cotrading_edges`.** Both start from the same `OPENED`,
+    non-bootstrap, tracked-wallet event stream (flag 5), but they answer
+    different questions: co-trading counts *repeated* co-occurrence across
+    many markets to justify drawing a collusion edge (a threshold,
+    `cotrade_min_shared_markets`); `follower_reaction` counts *one wallet's
+    average* followers per its own open, and specifically needs candidates
+    OUTSIDE the origin's cluster rather than needing them assigned to a
+    shared one. Forcing one function to serve both would bend one use case
+    around the other's semantics; a second small pure function, built the
+    same way, is simpler than a shared abstraction here.
+19. **(Workstream 7) `market_obviousness`'s liquidity/volume/spread reference
+    points are fixed settings, not a percentile rank against whichever
+    markets happen to be open today.** A population-relative rank would make
+    one wallet's score depend on which OTHER markets happened to be open
+    that day - not reproducible, and not explainable from the wallet's own
+    row alone. Fixed, operator-tunable reference points (same convention as
+    every other dollar/spread threshold in this project) keep the score
+    comparable day to day.
+20. **(Workstream 7) `wallet_crowdedness` is a current-state table (delete +
+    reinsert each daily run), not an append-only history like
+    `trader_scores`/`trader_category_scores`.** Nothing in the prompt asks
+    for a crowdedness trend chart, only a live per-wallet number the
+    dashboard shows alongside skill and hidden-alpha "right now" - the same
+    shape and reasoning `wallet_clusters` and `cluster_bandit_state` already
+    use (Workstreams 1 and 5), recomputed and replaced each run rather than
+    trended.
+21. **(Workstream 7) `hidden_alpha` is a runtime combination, never a stored
+    column.** `skill_score` is category-specific as of Workstream 6 and
+    varies per (wallet, category); `crowdedness` is a slower-moving,
+    wallet-level number recomputed daily. Storing a precomputed
+    "hidden_alpha" would mean one stale-on-arrival number per (wallet,
+    category) pair, going stale the moment either input next recomputes on
+    its own independent schedule. Decision: `hidden_alpha_score()` /
+    `hidden_alpha_weighted_score()` are pure functions, combined fresh at
+    the point of use from the signal's own contributor weights (already
+    category-specific, per Workstream 6) and a live `wallet_crowdedness`
+    lookup - the exact "recompute at entry-filter time from the signal's own
+    contributors" pattern Workstream 5's adaptive multiplier already
+    established (flag 14).
+22. **(Workstream 7) This lands as a challenger portfolio's entry filter
+    only - it does not touch sizing, and it does not change the default
+    consensus engine.** The prompt's own framing names two different scopes
+    in tension: "the consensus engine and the paper portfolios' sizing use
+    hidden_alpha... [but] run this as a CHALLENGER first." Flagging this
+    disagreement explicitly rather than silently picking one: resolved the
+    same way Workstream 5 resolved the identical tension (flag 14) - one new
+    portfolio (`hidden_alpha`), one new toggle
+    (`paper_use_hidden_alpha_weighting`), recomputing only the entry
+    filter's `weighted_score` check, never the signal itself, never any
+    other portfolio's view of it, and never Stage 2/3 sizing (which is keyed
+    off the signal's own persisted `weighted_score`/cluster-count/price
+    bands, not a live per-portfolio recompute - reworking that is a bigger
+    change than one challenger portfolio warrants before there's any
+    evidence penalizing crowdedness helps). If `hidden_alpha` beats
+    `baseline`, expanding it into sizing or into the default consensus
+    weighting is a follow-up made from evidence, not assumed here.
 
 None of the above are objections to the spec - they're the calls this
 design makes where the prompt left room or where the current codebase
@@ -426,6 +500,151 @@ signals is how this project finds out whether adaptive weighting helps,
 exactly the same champion/challenger methodology `kelly` already uses
 against `baseline` for sizing (docs/PHASE5_DESIGN.md section 6).
 
+## Workstream 7: on-chain crowdedness penalty
+
+**Why this depends on Workstreams 1 and 2, and lands after both.**
+`follower_reaction` (below) needs `wallet_clusters` to tell a genuine
+follower from the wallet's own syndicate - without it, a five-wallet
+cluster copying its own leader within seconds would inflate that leader's
+crowdedness score on nothing but its own collusion. The wider point CLV
+established - measure the thing directly, don't wait on PnL resolution
+(Workstream 2's own reasoning) - applies here too: crowdedness is measured
+from the same on-chain activity this project already collects, on the same
+kind of rolling/aggregated schedule as everything else in this phase, not
+from a new data source.
+
+**Scope discipline, restated for this workstream specifically.** The
+research blueprint this prompt is drawn from describes a social-popularity
+signal (follower counts, mention volume, discovery velocity on platforms
+like Twitter/Nansen). That is explicitly out of scope: no reliable
+address-to-social-mention feed exists, and adding a scraper or a
+third-party analytics dependency would violate this project's read-only,
+public-API-only posture (CLAUDE.md). Every component below is derived
+exclusively from `position_history`, `leaderboard_snapshots`, and
+`markets` - data this project already collects for other reasons.
+
+**Three components, each normalised to [0, 1], each with a named failure
+mode:**
+
+- **`follower_reaction`.** For every `OPENED`, non-bootstrap event a wallet
+  made in the last `crowd_reaction_lookback_days` (flag 17), count how many
+  OTHER tracked wallets - in a DIFFERENT cluster (flag 16: matching on
+  `asset` alone already means "same outcome," so no separate direction
+  check is needed) - opened the identical asset within
+  `crowd_reaction_window_minutes` afterward. Average that follower count
+  across the wallet's own sampled opens, then saturate to [0, 1] via
+  `min(average / crowd_reaction_saturation, 1)` - a simple clamped-linear
+  saturation, not an exponential one, matching this project's stated
+  preference for an auditable number over a smoother-but-opaque one (flag
+  10's precedent). High = this wallet's moves are widely and quickly
+  copied by genuinely independent voices. Failure mode: a popular-enough
+  market could still produce a coincidental reaction between two
+  independent wallets who both just happen to like it; the cross-cluster
+  requirement and the tight window (minutes, not hours) bound this the same
+  way `cotrade_window_minutes` bounds the same risk in Workstream 1, but
+  neither guarantees it away entirely.
+- **`leaderboard_fame`.** From `leaderboard_snapshots` within the existing
+  `scoring_lookback_days` window (reused, not a new setting): the median
+  rank across every snapshot the wallet appeared in (median, not best - one
+  lucky top-1 snapshot shouldn't alone read as "famous"), turned into
+  `rank_score = max(0, 1 - (median_rank - 1) / (leaderboard_top_n - 1))`
+  (rank 1 scores 1.0, a rank at the tracked ceiling scores ~0), multiplied
+  by `appearance_fraction` (appearances / possible appearances in the
+  window, capped at 1.0 - the same formula `app/consensus/scoring.py`'s
+  private `_consistency()` already uses, reimplemented locally rather than
+  importing a private, underscore-prefixed name across a module boundary).
+  Multiplicative, not averaged: a wallet seen once at rank 1 and absent
+  every other snapshot should not score as famous as one that holds rank 1
+  consistently. High = discovered and tracked by everyone watching the
+  public leaderboard, the literal definition of "not hidden." Failure mode:
+  a wallet that just started being tracked has zero snapshots and scores
+  0 fame by construction - correct (it hasn't had the chance to be famous
+  yet), but worth stating so a new wallet's crowdedness score isn't
+  misread as "definitely uncrowded" rather than "not yet measured."
+- **`market_obviousness`.** The average, across the distinct markets behind
+  this wallet's currently-open positions, of a per-market efficiency score:
+  `(liquidity_score + volume_score + spread_score) / 3`, where
+  `liquidity_score = min(liquidity / crowd_liquidity_reference_usd, 1)`,
+  `volume_score = min(volume_24h / crowd_volume_reference_usd, 1)`, and
+  `spread_score = 1 - min(spread / crowd_spread_reference, 1)` (tight
+  spread -> high obviousness, per the blueprint's microstructure finding
+  that efficient markets leak alpha faster). A market missing any of these
+  three fields (not yet synced) contributes 0 for that field - the same
+  "not yet measured, treated as least-informative" default `market_obviousness`
+  and `leaderboard_fame` both use, rather than skipping the field or the
+  whole market. High = this wallet's edge, if any, lives in the markets
+  everyone already watches. Failure mode: a wallet with genuinely no open
+  positions right now scores 0 - not "provably in thin markets," just
+  "nothing to measure this cycle," same caveat as `leaderboard_fame`'s.
+
+**Crowdedness.** `crowdedness = clamp(crowd_weight_reaction *
+follower_reaction + crowd_weight_fame * leaderboard_fame +
+crowd_weight_obvious * market_obviousness, 0, 1)`, weights defaulting to
+0.5 / 0.3 / 0.2 (reaction weighted highest - it is the most direct evidence
+of actual copying, the other two are proxies for *likelihood* of being
+found) and validated to sum to 1.0, same `_validate_score_weights`-style
+check this project already applies to the Workstream 3 score weights.
+
+**Storage.** `wallet_crowdedness` (`wallet_id` FK unique,
+`follower_reaction`, `leaderboard_fame`, `market_obviousness`,
+`crowdedness` - all `Money` - `computed_at`) - one row per wallet, deleted
+and reinserted each daily run (flag 20), same shape as `wallet_clusters`
+and `cluster_bandit_state`.
+
+**Hidden-alpha score.** `hidden_alpha = clamp(skill_score -
+crowd_penalty_weight * crowdedness, 0, 1)` - a SOFT penalty (subtraction,
+not a multiplicative or hard cutoff), per the blueprint's explicit
+instruction that a genuinely skilled wallet should never be discarded just
+for having some following. `skill_score` is the Workstream-3 machinery's
+output - per-category where the caller has one (Workstream 6's
+`trader_category_scores`, already the weight every `ContributorEvent`
+carries as of that workstream), the wallet's raw score otherwise. Computed
+fresh at the point of use, never stored (flag 21) - `hidden_alpha_score()`
+for a single (skill, crowdedness) pair, and
+`hidden_alpha_weighted_score(contributors, cluster_of, crowdedness_of,
+crowd_penalty_weight)` for a whole signal's contributor list, mirroring
+`app/optimization/bandit.py`'s `effective_weighted_score()` shape exactly:
+apply the per-wallet adjustment first (there, multiply by the cluster's
+bandit multiplier; here, subtract the wallet's own crowdedness penalty),
+THEN take the max within each cluster and sum across clusters - one vote
+per independent cluster, same as everywhere else in this phase.
+
+**Consensus/sizing impact - challenger only (flag 22).** A new paper
+portfolio, `hidden_alpha`, otherwise identical to `baseline`, with one new
+portfolio param, `paper_use_hidden_alpha_weighting=true`. Its entry filter
+recomputes the `weighted_score` it checks via
+`hidden_alpha_weighted_score()` from the signal's own stored contributors
+and a live `wallet_crowdedness` lookup, instead of the signal's stored
+`weighted_score` - the exact same "recompute at entry-filter time, never
+fork signal generation" pattern `adaptive` already established (flag 14).
+Sizing is untouched for every portfolio, `hidden_alpha` included. Running
+`hidden_alpha` head-to-head against `baseline` (and against `adaptive`,
+independently) on the identical signal stream is how this project finds
+out whether penalizing crowdedness actually improves results, rather than
+assuming a skilled-but-crowded wallet's edge is really gone.
+
+**Failure modes, named explicitly:**
+- *A skilled wallet gets penalized for followers it never asked for.* The
+  soft-penalty subtraction (not a hard cutoff) is the direct mitigation -
+  `crowd_penalty_weight` defaults well below 1.0 specifically so a
+  very-high-skill crowded wallet still scores respectably, never zeroed out
+  on crowdedness alone.
+- *A brand-new wallet scores as "uncrowded" purely from having no history
+  yet*, not from genuinely trading in obscurity - `leaderboard_fame` and
+  `market_obviousness` both default toward 0 (uncrowded) when there is
+  nothing yet to measure, which reads the same as "provably hidden" even
+  though it means "not yet observed." This is the same cold-start
+  asymmetry flag 3 already accepts for clustering (independent-until-proven
+  otherwise); here it cuts the opposite way (uncrowded-until-proven-
+  otherwise) but for the identical reason - a thin prior shouldn't be
+  penalized while the evidence catches up.
+- *A sophisticated operator could still defeat `follower_reaction`* by
+  varying position sizes, delaying entries beyond the reaction window, or
+  routing "copies" through wallets deliberately never clustered together in
+  the first place - the same limit flag/Workstream 1's own third failure
+  mode names for co-trading detection generally. Stated here for the same
+  reason: never mistaken for a solved problem later.
+
 ## Cross-cutting
 
 **Everything here is offline/scheduled, none of it a hot path** (scope
@@ -444,8 +663,15 @@ scheduler, same shape as every collector/consensus/paper job already there.
   `clv_resolution` nullable, `computed_at`).
 - `cluster_bandit_state` (`cluster_id` String PK, `alpha`, `beta`,
   `observations` int, `adaptive_multiplier`, `updated_at`).
+- `trader_category_scores` (`wallet_id` FK, `category` String,
+  `score`, `resolved_trades`, `computed_at`) - Workstream 6.
+- `wallet_crowdedness` (`wallet_id` FK unique, `follower_reaction`,
+  `leaderboard_fame`, `market_obviousness`, `crowdedness`, `computed_at`) -
+  Workstream 7.
 
 **New/changed columns:**
+- `markets.category` (String, not nullable, default "Other") - Workstream
+  6, normalised from Gamma's per-market `tags` array.
 - `signals.distinct_clusters` (int, nullable - flag 2).
 - `trader_scores.win_rate_component`, `.resolved_trade_count` (int),
   `.zombie_count` (int).
@@ -478,6 +704,18 @@ code):**
 | `adaptive_weight_min` | 0.5 | Workstream 5 |
 | `adaptive_weight_max` | 2.0 | Workstream 5 |
 | `adaptive_min_signals` | 30 | Workstream 5 |
+| `ranking_halflife_days` / `ranking_prior_strength` / `ranking_zombie_grace_days` (reused) | - | Workstream 6, per-category shrinkage |
+| `crowd_reaction_window_minutes` | 15 | Workstream 7 |
+| `crowd_reaction_lookback_days` | 14 | Workstream 7 |
+| `crowd_reaction_saturation` | 5 | Workstream 7, avg cross-cluster followers that saturates to 1.0 |
+| `crowd_liquidity_reference_usd` | 50000 | Workstream 7 |
+| `crowd_volume_reference_usd` | 20000 | Workstream 7 |
+| `crowd_spread_reference` | 0.10 | Workstream 7 |
+| `crowd_weight_reaction` | 0.5 | Workstream 7, sums to 1.0 with the two below |
+| `crowd_weight_fame` | 0.3 | Workstream 7 |
+| `crowd_weight_obvious` | 0.2 | Workstream 7 |
+| `crowd_penalty_weight` | 0.3 | Workstream 7, soft penalty on `hidden_alpha` |
+| `crowdedness_recompute_interval_hours` | 24 | Workstream 7 |
 
 ## Rollout and success criteria
 
@@ -509,3 +747,16 @@ fail honestly instead of being declared a win by assumption:
   clusters, that's this workstream failing honestly, and the multiplier
   bounds (flag 13, `adaptive_weight_min`/`max`) exist precisely so that
   failure stays cheap and reversible rather than compounding.
+- **Workstream 6:** the per-category score spread for wallets with history
+  in more than one category - specialists (high in one category, low/
+  neutral elsewhere) should visibly separate from genuine generalists
+  (similar scores everywhere), the direct evidence the GMX "ROI-per-asset"
+  lesson actually applies to this project's wallets, not just in theory.
+- **Workstream 7:** `hidden_alpha` vs. `baseline` (and vs. `adaptive`,
+  independently) paper portfolio results, head-to-head, same signal stream
+  - the direct test of whether penalizing measured crowdedness improves
+  results, exactly the same champion/challenger standard every other
+  workstream in this phase is held to. A crowdedness score that never
+  separates skilled-but-crowded from skilled-and-hidden wallets (flag 19-20's
+  cold-start caveats aside) would be this workstream failing honestly, not
+  a reason to force the penalty into the default consensus weighting anyway.
