@@ -269,6 +269,27 @@ class Settings(BaseSettings):
     paper_stop_loss_pct: Decimal = Decimal("0.20")
     paper_exit_on_signal_expiry_hours: int = 72
 
+    # SCALP exit rule (app/paper/exits_scalp.py) - the "greed" portfolio's
+    # only divergence from baseline. Off by default; portfolio-overridable
+    # (paper_use_scalp_exit in a portfolio's params) same as every other
+    # paper_* setting - see app/paper/strategies.py's "greed" StrategyConfig,
+    # the only one that sets this True. When on, this REPLACES take_profit_
+    # pct/stop_loss_pct/exit_on_signal_expiry_hours entirely for that
+    # portfolio (see engine.py's check_exit) rather than running alongside
+    # them.
+    paper_use_scalp_exit: bool = False
+    # Gain per share (not a percentage) that closes an OPEN trade
+    # immediately - "take any small profit." Default 0.03 = 3 cents on this
+    # project's [0,1] price scale.
+    paper_scalp_take_profit: Decimal = Decimal("0.03")
+    # A small loss within this of the fill price closes at breakeven rather
+    # than risking it getting worse - "if you're down, take the bounce back
+    # to even."
+    paper_scalp_breakeven_tolerance: Decimal = Decimal("0.005")
+    # Backstop: closes at market if neither trigger above has fired within
+    # this many hours of the fill.
+    paper_scalp_max_hold_hours: int = 72
+
     # Statistical honesty floor (app/paper/metrics.py) - see design section
     # 7. Deliberately not portfolio-overridable: a sample-size floor is a
     # statement about honesty, not a strategy choice, so every portfolio is
@@ -401,6 +422,8 @@ class Settings(BaseSettings):
             "paper_max_spread",
             "paper_take_profit_pct",
             "paper_stop_loss_pct",
+            "paper_scalp_take_profit",
+            "paper_scalp_breakeven_tolerance",
             "risk_max_position_pct",
             "risk_max_exposure_pct",
             "risk_max_market_exposure_pct",
@@ -426,6 +449,7 @@ class Settings(BaseSettings):
         positive_fields = (
             "paper_interval_seconds",
             "paper_exit_on_signal_expiry_hours",
+            "paper_scalp_max_hold_hours",
             "paper_min_trades_for_stats",
             "paper_confidence_reference_score",
             "risk_max_open_positions",

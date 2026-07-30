@@ -36,6 +36,7 @@ from app.db.session import db_session
 from app.optimization.bandit import effective_weighted_score, load_multipliers
 from app.optimization.clv import address_to_cluster_map
 from app.optimization.crowdedness import crowdedness_by_address, hidden_alpha_weighted_score
+from app.paper.exits_scalp import ScalpExitConfig, ScalpExitReason, check_scalp_exit
 from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
 from app.paper.resolution import ResolutionOutcome, detect_resolution
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
@@ -123,6 +124,11 @@ class ExitConfig:
     take_profit_pct: Decimal
     stop_loss_pct: Decimal
     exit_on_signal_expiry_hours: int
+    # None for every portfolio except "greed" - when set, REPLACES
+    # take_profit_pct/stop_loss_pct/exit_on_signal_expiry_hours entirely
+    # for that portfolio's exit decision (see check_exit below), rather
+    # than running alongside them. See app/paper/exits_scalp.py.
+    scalp: ScalpExitConfig | None = None
 
 
 def passes_entry_filters(
@@ -149,18 +155,31 @@ def passes_entry_filters(
 def check_exit(
     entry_price: Decimal,
     current_price: Decimal | None,
+    pessimistic_price: Decimal | None,
+    entered_at: datetime,
     resolution: ResolutionOutcome,
     signal_created_at: datetime,
     now: datetime,
     config: ExitConfig,
-) -> ExitReason | None:
+) -> ExitReason | ScalpExitReason | None:
     """First matching condition wins, in this fixed order - resolution
     first (it's ground truth the instant it's known, and must never be
-    miscategorized as a take-profit/stop-loss/expiry exit instead), then
-    take-profit, then stop-loss, then signal expiry. None means stay open.
+    miscategorized as any other kind of exit instead), then the
+    portfolio's own exit ladder. None means stay open.
+
+    config.scalp set means this portfolio's ENTIRE exit ladder below
+    (take-profit/stop-loss/signal-expiry) is replaced by the SCALP rule -
+    "the ONLY difference is a scalp-style exit rule," not an additional one
+    layered on top. pessimistic_price (bid-side minus slippage, computed by
+    the caller - see _pessimistic_exit_price) feeds the scalp checks;
+    current_price (raw) still feeds the baseline take-profit/stop-loss
+    checks below, unchanged from before scalp existed.
     """
     if resolution in (ResolutionOutcome.WON, ResolutionOutcome.LOST):
         return ExitReason.MARKET_RESOLVED
+
+    if config.scalp is not None:
+        return check_scalp_exit(entry_price, pessimistic_price, entered_at, now, config.scalp)
 
     if current_price is not None:
         if current_price >= entry_price * (1 + config.take_profit_pct):
@@ -381,12 +400,26 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
             params, "paper_max_entry_price_drift", settings.paper_max_entry_price_drift
         ),
     )
+    use_scalp_exit = g(params, "paper_use_scalp_exit", settings.paper_use_scalp_exit)
     exits = ExitConfig(
         take_profit_pct=g(params, "paper_take_profit_pct", settings.paper_take_profit_pct),
         stop_loss_pct=g(params, "paper_stop_loss_pct", settings.paper_stop_loss_pct),
         exit_on_signal_expiry_hours=g(
             params, "paper_exit_on_signal_expiry_hours", settings.paper_exit_on_signal_expiry_hours
         ),
+        scalp=ScalpExitConfig(
+            take_profit=g(params, "paper_scalp_take_profit", settings.paper_scalp_take_profit),
+            breakeven_tolerance=g(
+                params,
+                "paper_scalp_breakeven_tolerance",
+                settings.paper_scalp_breakeven_tolerance,
+            ),
+            max_hold_hours=g(
+                params, "paper_scalp_max_hold_hours", settings.paper_scalp_max_hold_hours
+            ),
+        )
+        if use_scalp_exit
+        else None,
     )
     risk = resolve_risk_config(params, settings)
     tiered_sizing = resolve_tiered_sizing_config(params, settings)
@@ -932,6 +965,44 @@ def _mark_to_market(session: Session, portfolio: PaperPortfolio) -> list[PaperTr
     return open_trades
 
 
+# Below this, a market has no real liquidity to size a slippage penalty
+# from - same threshold and reasoning as app/paper/fills.py's own
+# _MIN_LIQUIDITY (not imported directly: that name is private to fills.py,
+# and this is a small enough constant that duplicating it beats reaching
+# into another module's underscore-prefixed name).
+_MIN_EXIT_LIQUIDITY = Decimal("1")
+
+
+def _pessimistic_exit_price(
+    market: Market | None, trade: PaperTrade, fill_config: FillConfig
+) -> Decimal | None:
+    """The sell-side mirror of app/paper/fills.py's compute_fill: bid-side
+    (falling back to the trade's last-known price if no bid is recorded -
+    the prices table itself never carries a bid/ask split, same reasoning
+    as MarketSnapshot's docstring) minus a slippage penalty scaled by trade
+    size relative to current liquidity, clamped at slippage_max - the exact
+    same model entries already pay on the way in, just receiving less on
+    the way out instead of paying more. None when there's no reference
+    price or no liquidity to size the penalty from - the caller falls back
+    to trade.current_price or entry_price, same "nothing better yet"
+    convention fills.py's own fallback path uses for entries.
+
+    Used for every open trade's exit check, not just SCALP-configured
+    ones (docs prompt: "the same pessimistic pricing as the rest of the
+    engine") - baseline's take-profit/stop-loss still compare against raw
+    current_price unchanged (see check_exit), but every portfolio's
+    MARKET_RESOLVED/scalp path benefits from having this ready either way.
+    """
+    if market is None:
+        return None
+    reference = market.best_bid if market.best_bid is not None else trade.current_price
+    if reference is None or market.liquidity is None or market.liquidity < _MIN_EXIT_LIQUIDITY:
+        return None
+    notional = (trade.size or Decimal(0)) * reference
+    penalty = min(fill_config.slippage_k * (notional / market.liquidity), fill_config.slippage_max)
+    return reference - penalty
+
+
 def _run_exits(
     session: Session,
     portfolio: PaperPortfolio,
@@ -963,9 +1034,12 @@ def _run_exits(
             continue
 
         signal = session.get(Signal, trade.signal_id)
+        pessimistic_price = _pessimistic_exit_price(market, trade, config.fill)
         exit_reason = check_exit(
             entry_price=trade.entry_price,
             current_price=trade.current_price,
+            pessimistic_price=pessimistic_price,
+            entered_at=trade.entry_at,
             resolution=resolution,
             signal_created_at=signal.created_at,
             now=now,
@@ -976,6 +1050,17 @@ def _run_exits(
 
         if exit_reason == ExitReason.MARKET_RESOLVED:
             exit_price = Decimal("1.0") if resolution == ResolutionOutcome.WON else Decimal("0.0")
+        elif isinstance(exit_reason, ScalpExitReason):
+            # Pessimistic pricing is mandatory for scalp - see the module
+            # docstring on app/paper/exits_scalp.py: margins are a few
+            # cents, so execution cost matters far more here than on
+            # baseline's much wider bands.
+            if pessimistic_price is not None:
+                exit_price = pessimistic_price
+            elif trade.current_price is not None:
+                exit_price = trade.current_price
+            else:
+                exit_price = trade.entry_price
         elif trade.current_price is not None:
             exit_price = trade.current_price
         else:

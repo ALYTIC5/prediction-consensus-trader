@@ -51,6 +51,17 @@ class StrategyConfig:
     # use_adaptive_weighting above (flag 22).
     use_hidden_alpha_weighting: bool = False
 
+    # --- SCALP exit rule (app/paper/exits_scalp.py) --- When True, REPLACES
+    # take_profit/stop_loss/exit_on_signal_expiry_hours entirely for this
+    # portfolio's exit decision (see engine.py's check_exit) - "greed" is
+    # the only strategy that sets this True, and is otherwise identical to
+    # "baseline" (same entry filters, same starting bankroll), a clean A/B
+    # test of exit philosophy.
+    use_scalp_exit: bool = False
+    scalp_take_profit: Decimal = Decimal("0.03")
+    scalp_breakeven_tolerance: Decimal = Decimal("0.005")
+    scalp_max_hold_hours: int = 72
+
     # --- Sizing (sizing.py SizingConfig) - only used when sizer=FIXED ---
     sizing_rule: str = "FIXED_FRACTION"
     bet_size: Decimal = Decimal("0.02")
@@ -84,6 +95,10 @@ class StrategyConfig:
             "paper_sizer": self.sizer,
             "paper_use_adaptive_weighting": self.use_adaptive_weighting,
             "paper_use_hidden_alpha_weighting": self.use_hidden_alpha_weighting,
+            "paper_use_scalp_exit": self.use_scalp_exit,
+            "paper_scalp_take_profit": str(self.scalp_take_profit),
+            "paper_scalp_breakeven_tolerance": str(self.scalp_breakeven_tolerance),
+            "paper_scalp_max_hold_hours": self.scalp_max_hold_hours,
             "paper_min_traders": self.min_traders,
             "paper_min_weighted_score": str(self.min_score),
             "paper_min_combined_value_usd": str(self.min_combined_value),
@@ -158,6 +173,22 @@ STRATEGIES: list[StrategyConfig] = [
         # "adaptive" and "kelly" (docs/PHASE6_DESIGN.md workstream 7).
         name="hidden_alpha",
         use_hidden_alpha_weighting=True,
+        min_traders=3,
+        min_score=Decimal("1.0"),
+        min_liquidity=Decimal("5000"),
+        bet_size=Decimal("0.02"),
+        take_profit=Decimal("0.30"),
+        stop_loss=Decimal("0.20"),
+    ),
+    StrategyConfig(
+        # Identical to baseline in every entry-filter dimension and starting
+        # bankroll - the ONLY difference is the exit rule (SCALP instead of
+        # take_profit/stop_loss/signal-expiry). take_profit/stop_loss below
+        # are unused while use_scalp_exit=True (see engine.py's check_exit),
+        # kept at baseline's values anyway so the "identical except exit
+        # rule" claim is visible in the source, not just true at runtime.
+        name="greed",
+        use_scalp_exit=True,
         min_traders=3,
         min_score=Decimal("1.0"),
         min_liquidity=Decimal("5000"),
