@@ -99,6 +99,12 @@
     <span class="text-dim" style="font-weight: 400; font-size: 12px;">min {{ calibration_min_samples }} samples to trust</span>
   </div>
   {% if calibration_buckets %}
+  <div class="chart-wrap" style="height:220px; margin-bottom: var(--space-3);">
+    <canvas id="calibration-chart"
+            data-chart-json="{{ calibration_chart_json | tojson | safe }}"
+            style="width:100%; height:100%;">
+    </canvas>
+  </div>
   <div class="data-table-wrap">
     <table class="data-table">
       <thead>
@@ -143,6 +149,12 @@
 <div class="panel">
   <div class="panel__title"><span>Sizer usage by portfolio</span></div>
   {% if sizer_breakdown %}
+  <div class="chart-wrap" style="height:220px; margin-bottom: var(--space-3);">
+    <canvas id="sizer-chart"
+            data-chart-json="{{ sizer_chart_json | tojson | safe }}"
+            style="width:100%; height:100%;">
+    </canvas>
+  </div>
   <div class="data-table-wrap">
     <table class="data-table">
       <thead>
@@ -172,4 +184,11 @@
   {% endif %}
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+renderBarChart('calibration-chart');
+renderBarChart('sizer-chart', { stacked: true, legend: true });
+</script>
 {% endblock %}

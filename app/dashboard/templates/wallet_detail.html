@@ -21,6 +21,12 @@
 <div class="panel">
   <div class="panel__title"><span>Open positions</span></div>
   {% if wallet.open_positions %}
+  <div class="chart-wrap" style="height:220px; margin-bottom: var(--space-3);">
+    <canvas id="position-pnl-chart"
+            data-chart-json="{{ position_pnl_chart_json | tojson | safe }}"
+            style="width:100%; height:100%;">
+    </canvas>
+  </div>
   <div class="data-table-wrap">
     <table class="data-table">
       <thead>
@@ -92,4 +98,10 @@
   {% endif %}
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+renderBarChart('position-pnl-chart');
+</script>
 {% endblock %}

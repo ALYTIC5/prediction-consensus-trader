@@ -166,6 +166,105 @@
     }
   </script>
 
+  <script>
+    // Shared Chart.js renderers - any page can drop a
+    // <canvas data-chart-json="..."> and call renderTrendChart/
+    // renderBarChart(canvasId) from its own page-level scripts block
+    // instead of redefining this config per page (originally written once
+    // for the Optimization page, now shared across every page with a chart).
+    function renderTrendChart(canvasId) {
+      var canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      var raw = canvas.getAttribute('data-chart-json');
+      if (!raw) return;
+      try {
+        var data = JSON.parse(raw);
+        if (!data.labels || data.labels.length === 0) return;
+        new Chart(canvas, {
+          type: 'line',
+          data: data,
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                enabled: true,
+                backgroundColor: '#10141d',
+                titleFont: { family: 'IBM Plex Mono', size: 11 },
+                bodyFont: { family: 'IBM Plex Mono', size: 12 },
+                titleColor: '#8a93a6',
+                bodyColor: '#e6edf3',
+                borderColor: '#1c2230',
+                borderWidth: 1,
+                padding: 8
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: '#1C2230' },
+                ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6', maxTicksLimit: 8 }
+              },
+              y: {
+                grid: { color: '#1C2230' },
+                ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+              }
+            }
+          }
+        });
+      } catch(e) {}
+    }
+
+    function renderBarChart(canvasId, options) {
+      options = options || {};
+      var canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      var raw = canvas.getAttribute('data-chart-json');
+      if (!raw) return;
+      try {
+        var data = JSON.parse(raw);
+        if (!data.labels || data.labels.length === 0) return;
+        new Chart(canvas, {
+          type: 'bar',
+          data: data,
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            indexAxis: options.horizontal ? 'y' : 'x',
+            plugins: {
+              legend: { display: !!options.legend, labels: { color: '#8a93a6', font: { family: 'IBM Plex Mono', size: 10 } } },
+              tooltip: {
+                enabled: true,
+                backgroundColor: '#10141d',
+                titleFont: { family: 'IBM Plex Mono', size: 11 },
+                bodyFont: { family: 'IBM Plex Mono', size: 12 },
+                titleColor: '#8a93a6',
+                bodyColor: '#e6edf3',
+                borderColor: '#1c2230',
+                borderWidth: 1,
+                padding: 8
+              }
+            },
+            scales: {
+              x: {
+                stacked: !!options.stacked,
+                grid: { color: '#1C2230' },
+                ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+              },
+              y: {
+                stacked: !!options.stacked,
+                grid: { color: '#1C2230' },
+                ticks: { font: { family: 'IBM Plex Mono', size: 10 }, color: '#8a93a6' }
+              }
+            }
+          }
+        });
+      } catch(e) {}
+    }
+  </script>
+
   {% block scripts %}{% endblock %}
 </body>
 </html>

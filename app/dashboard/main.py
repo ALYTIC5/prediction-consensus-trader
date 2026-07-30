@@ -182,15 +182,47 @@ def signal_contributors_fragment(request: Request, signal_id: int):
     return templates.TemplateResponse(request, "_signal_contributors.html", {"signal": signal})
 
 
+_TRADER_CHART_TOP_N = 15
+
+
+def _trader_score_chart_json(traders: list[queries.TraderRow]) -> dict:
+    """Top-N by score, one bar chart - traders is already sorted highest
+    score first (see get_trader_scores).
+    """
+    top = traders[:_TRADER_CHART_TOP_N]
+    labels = [t.username or t.address[:10] for t in top]
+    data = [float(t.score) for t in top]
+    colors = ["#5CF2C7" if t.is_tracked else "#8A93A6" for t in top]
+    return {
+        "labels": labels,
+        "datasets": [{"label": "Score", "data": data, "backgroundColor": colors}],
+    }
+
+
 @app.get("/traders")
 def traders(request: Request):
     """The Traders page: latest score per wallet, sorted by score."""
+    trader_rows = queries.get_trader_scores()
     context = {
         "active_page": "traders",
         "environment": get_settings().environment,
-        "traders": queries.get_trader_scores(),
+        "traders": trader_rows,
+        "trader_score_chart_json": _trader_score_chart_json(trader_rows),
     }
     return templates.TemplateResponse(request, "traders.html", context)
+
+
+def _position_pnl_chart_json(positions: list) -> dict:
+    """cash_pnl per open position, one bar chart - at-a-glance which of a
+    wallet's current bets are winning vs losing, colored by sign.
+    """
+    labels = [p.title[:40] for p in positions]
+    data = [float(p.cash_pnl) for p in positions]
+    colors = ["#5CF2C7" if p.cash_pnl >= 0 else "#F26D78" for p in positions]
+    return {
+        "labels": labels,
+        "datasets": [{"label": "Cash PnL", "data": data, "backgroundColor": colors}],
+    }
 
 
 @app.get("/traders/{wallet_id}")
@@ -203,6 +235,7 @@ def wallet_detail(request: Request, wallet_id: int):
         "active_page": "traders",
         "environment": get_settings().environment,
         "wallet": detail,
+        "position_pnl_chart_json": _position_pnl_chart_json(detail.open_positions),
     }
     return templates.TemplateResponse(request, "wallet_detail.html", context)
 
@@ -372,6 +405,51 @@ def emergency_stop_action(request: Request, action: str, variant: str = Form("co
     return templates.TemplateResponse(request, "_emergency_stop_control.html", context)
 
 
+def _calibration_chart_json(buckets: list[queries.CalibrationBucketRow]) -> dict:
+    """p_hat per bucket, colored by whether it clears
+    calibration_min_samples_per_bucket - a trusted bucket is exactly what a
+    KELLY portfolio's next signal would actually read from get_p_hat().
+    """
+    labels = [f"{b.cluster_band} / {b.score_band} / {b.price_band}" for b in buckets]
+    data = [float(b.p_hat) for b in buckets]
+    colors = ["#5CF2C7" if b.trusted else "#FFB454" for b in buckets]
+    return {
+        "labels": labels,
+        "datasets": [{"label": "p_hat", "data": data, "backgroundColor": colors}],
+    }
+
+
+_SIZER_KEYS = ("FIXED", "TIERED", "KELLY", "TIERED_FALLBACK")
+_SIZER_LABELS = {
+    "FIXED": "Fixed",
+    "TIERED": "Tiered",
+    "KELLY": "Kelly",
+    "TIERED_FALLBACK": "Kelly→Tiered fallback",
+}
+_SIZER_COLORS = {
+    "FIXED": "#8A93A6",
+    "TIERED": "#5CF2C7",
+    "KELLY": "#5CF2C7",
+    "TIERED_FALLBACK": "#FFB454",
+}
+
+
+def _sizer_chart_json(rows: list[queries.SizerBreakdownRow]) -> dict:
+    """Stacked bar, one bar per portfolio - which sizer actually produced
+    each of its filled trades, same counts the Sizer usage table shows.
+    """
+    labels = [row.portfolio_name for row in rows]
+    datasets = [
+        {
+            "label": _SIZER_LABELS[key],
+            "data": [row.counts.get(key, 0) for row in rows],
+            "backgroundColor": _SIZER_COLORS[key],
+        }
+        for key in _SIZER_KEYS
+    ]
+    return {"labels": labels, "datasets": datasets}
+
+
 @app.get("/risk")
 def risk_page(request: Request, portfolio_id: int = 0, rule: str = ""):
     """The Risk page: emergency stop control, per-portfolio guardrail
@@ -379,6 +457,8 @@ def risk_page(request: Request, portfolio_id: int = 0, rule: str = ""):
     GET here never mutates - only the emergency-stop POST above does.
     """
     settings = get_settings()
+    calibration_buckets = queries.get_calibration_buckets()
+    sizer_breakdown = queries.get_sizer_used_breakdown()
     context = {
         "active_page": "risk",
         "environment": settings.environment,
@@ -391,8 +471,10 @@ def risk_page(request: Request, portfolio_id: int = 0, rule: str = ""):
         "risk_events": queries.get_risk_events(
             portfolio_id=portfolio_id or None, rule=rule or None
         ),
-        "calibration_buckets": queries.get_calibration_buckets(),
-        "sizer_breakdown": queries.get_sizer_used_breakdown(),
+        "calibration_buckets": calibration_buckets,
+        "calibration_chart_json": _calibration_chart_json(calibration_buckets),
+        "sizer_breakdown": sizer_breakdown,
+        "sizer_chart_json": _sizer_chart_json(sizer_breakdown),
         "calibration_min_samples": get_effective_settings().calibration_min_samples_per_bucket,
     }
     return templates.TemplateResponse(request, "risk.html", context)
@@ -486,6 +568,30 @@ def optimization_page(request: Request):
 # --- Paper trading pages ---
 
 
+def _comparison_chart_json(comparison: list[queries.PaperComparisonRow]) -> dict:
+    """ROI% per portfolio, one bar chart shared by the Paper overview and
+    Paper comparison pages - the same head-to-head, same-signal-stream
+    numbers the leaderboard table already shows, just visual. A portfolio
+    still below paper_min_trades_for_stats (insufficient=True) is dimmed
+    gray rather than colored green/red - its ROI isn't trustworthy yet,
+    same statistical-honesty framing the table already applies.
+    """
+    labels = [c.name for c in comparison]
+    data = [float(c.roi_pct * 100) if c.roi_pct is not None else None for c in comparison]
+    colors = []
+    for c in comparison:
+        if c.insufficient or c.roi_pct is None:
+            colors.append("#8A93A6")
+        elif c.roi_pct > 0:
+            colors.append("#5CF2C7")
+        else:
+            colors.append("#F26D78")
+    return {
+        "labels": labels,
+        "datasets": [{"label": "ROI %", "data": data, "backgroundColor": colors}],
+    }
+
+
 @app.get("/paper")
 def paper_overview_page(request: Request):
     """Paper Trading overview: stats bar, top performers, and leaderboard."""
@@ -506,6 +612,7 @@ def paper_overview_page(request: Request):
         "stats": stats,
         "top_performers": top_performers,
         "comparison": comparison,
+        "comparison_chart_json": _comparison_chart_json(comparison),
         "params_by_portfolio_id": {p.id: p.params for p in portfolios},
         "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
     }
@@ -521,6 +628,7 @@ def paper_comparison_page(request: Request):
         "active_page": "paper_comparison",
         "environment": settings.environment,
         "comparison": comparison,
+        "comparison_chart_json": _comparison_chart_json(comparison),
         "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
     }
     return templates.TemplateResponse(request, "paper_comparison.html", context)
