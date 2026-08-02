@@ -19,6 +19,7 @@ from app.paper.engine import run_cycle as run_paper_cycle
 from app.scheduler.runner import PeriodicJob, run_jobs
 from app.signals.generator import generate as generate_signals
 from app.utils.logging import setup_logging
+from app.utils.pruning import run_pruner_job
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,11 @@ async def _run() -> None:
                 name="bandit",
                 run=run_bandit_job,
                 interval_seconds=settings.adaptive_update_interval_seconds,
+            ),
+            PeriodicJob(
+                name="pruner",
+                run=run_pruner_job,
+                interval_seconds=86400,
             ),
         ]
         await run_jobs(jobs, stop_event)

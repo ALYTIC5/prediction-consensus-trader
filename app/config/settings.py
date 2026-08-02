@@ -98,6 +98,19 @@ class Settings(BaseSettings):
     positions_interval_seconds: int = 120
     markets_interval_seconds: int = 600
 
+    # --- Retention pruning (app/utils/pruning.py, scripts/prune_old_data.py) ---
+    # Append-only time-series tables with no natural cap - prices alone
+    # grows ~230k rows/day (one row per outcome token per markets-collector
+    # cycle) with nothing ever deleting old rows, the direct cause of the
+    # Railway Postgres volume hitting 98%. Retention windows are generous
+    # relative to what anything downstream actually reads: CLV/calibration
+    # windows top out at CALIBRATION_WINDOW_DAYS (90d, but that reads
+    # paper_trades/signals, not these three tables directly), and nothing
+    # in this codebase queries a price/history row older than a few weeks.
+    prices_retention_days: int = 14
+    market_history_retention_days: int = 30
+    position_history_retention_days: int = 60
+
     # --- Phase 3: trader scoring, consensus engine, signal generation ---
     # See docs/PHASE3_DESIGN.md. Every threshold here, none hardcoded in
     # app/consensus or app/signals - a hardcoded threshold there is a bug.
@@ -492,6 +505,9 @@ class Settings(BaseSettings):
         threshold trivially always-pass.
         """
         positive_fields = (
+            "prices_retention_days",
+            "market_history_retention_days",
+            "position_history_retention_days",
             "paper_interval_seconds",
             "paper_exit_on_signal_expiry_hours",
             "paper_scalp_max_hold_hours",
