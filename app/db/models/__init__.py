@@ -16,6 +16,7 @@ from app.db.models.risk import RiskDecisionType, RiskEvent
 from app.db.models.scores import TraderScore
 from app.db.models.scout import (
     ScoutForwardTrade,
+    ScoutStageTransition,
     ScoutValidationWindow,
     TraderPipeline,
     TraderPipelineStage,
@@ -43,6 +44,7 @@ __all__ = [
     "RiskEvent",
     "RuntimeOverride",
     "ScoutForwardTrade",
+    "ScoutStageTransition",
     "ScoutValidationWindow",
     "Signal",
     "SignalCLV",

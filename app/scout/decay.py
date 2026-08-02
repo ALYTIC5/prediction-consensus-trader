@@ -31,7 +31,12 @@ from sqlalchemy.orm import Session
 
 from app.config.effective import get_effective_settings
 from app.config.settings import Settings
-from app.db.models import ScoutValidationWindow, TraderPipeline, TraderPipelineStage
+from app.db.models import (
+    ScoutStageTransition,
+    ScoutValidationWindow,
+    TraderPipeline,
+    TraderPipelineStage,
+)
 from app.db.session import db_session
 from app.scout.forward import ForwardConfig, close_ready_windows
 from app.scout.ranking import crowdedness_by_wallet_id, scout_rank_score
@@ -40,12 +45,31 @@ logger = logging.getLogger(__name__)
 
 
 def _transition(
-    pipeline_row: TraderPipeline, new_stage: str, now: datetime, **extra_metrics: object
+    session: Session,
+    pipeline_row: TraderPipeline,
+    new_stage: str,
+    now: datetime,
+    reason: str,
+    **extra_metrics: object,
 ) -> None:
+    """Mutates the current-state row AND appends the append-only
+    transition-history row the dashboard drill-down reads - see
+    app/scout/forward.py's _transition() for the identical shape/reasoning.
+    """
+    from_stage = pipeline_row.stage
     pipeline_row.stage = new_stage
     pipeline_row.entered_stage_at = now
     pipeline_row.updated_at = now
     pipeline_row.metrics = {**(pipeline_row.metrics or {}), **extra_metrics}
+    session.add(
+        ScoutStageTransition(
+            wallet_id=pipeline_row.wallet_id,
+            from_stage=from_stage,
+            to_stage=new_stage,
+            reason=reason,
+            transitioned_at=now,
+        )
+    )
 
 
 def _update_metrics(pipeline_row: TraderPipeline, now: datetime, **extra_metrics: object) -> None:
@@ -159,9 +183,14 @@ def run_decay_check(settings: Settings) -> DecaySummary:
                 )
                 if streak >= config.decay_windows:
                     _transition(
+                        session,
                         pipeline_row,
                         TraderPipelineStage.DECAYING,
                         now,
+                        reason=(
+                            f"rolling CLV {window.avg_forward_clv:.4f} < threshold "
+                            f"{config.decay_threshold} for {streak} consecutive windows"
+                        ),
                         decay_streak=streak,
                         **window_metrics,
                     )
@@ -180,9 +209,14 @@ def run_decay_check(settings: Settings) -> DecaySummary:
             else:  # DECAYING
                 if is_healthy:
                     _transition(
+                        session,
                         pipeline_row,
                         TraderPipelineStage.VALIDATED,
                         now,
+                        reason=(
+                            f"recovered: forward CLV {window.avg_forward_clv:.4f} >= "
+                            f"threshold {config.decay_threshold}"
+                        ),
                         decay_streak=0,
                         **window_metrics,
                     )
@@ -198,9 +232,11 @@ def run_decay_check(settings: Settings) -> DecaySummary:
                 )
                 if streak >= 2 * config.decay_windows:
                     _transition(
+                        session,
                         pipeline_row,
                         TraderPipelineStage.REJECTED,
                         now,
+                        reason=f"persistent decay: {streak} consecutive sub-threshold windows",
                         decay_streak=streak,
                         **window_metrics,
                     )

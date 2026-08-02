@@ -35,6 +35,7 @@ from app.db.models import (
     Position,
     PositionHistory,
     ScoutForwardTrade,
+    ScoutStageTransition,
     ScoutValidationWindow,
     TraderPipeline,
     TraderPipelineStage,
@@ -245,6 +246,21 @@ def _metrics_json(result: ScreeningResult) -> dict:
     }
 
 
+def _screening_reason(result: ScreeningResult) -> str:
+    """The dashboard drill-down's "why did this wallet move, and why"
+    sentence for a Stage 1 verdict - built once, from the same numbers
+    stored in metrics at this exact moment, never recomputed later.
+    """
+    if result.passed:
+        return (
+            f"passed historical screen: wilson_low={result.wilson_low:.4f} "
+            f"activity_rate={result.activity_rate:.2f}/day "
+            f"week_fraction={result.profitable_week_fraction:.2f} "
+            f"n={result.total_trades}"
+        )
+    return f"failed historical screen: gates={list(result.failing_gates)} n={result.total_trades}"
+
+
 def load_screenable_wallet_ids(session: Session) -> set[int]:
     """Every wallet with at least one position_history row - the Scout's
     real discovery population (docs/SCOUT_DESIGN.md flag 2): every wallet
@@ -353,6 +369,22 @@ def run_historical_screen(settings: Settings) -> ScreeningSummary:
                 session.execute(
                     delete(ScoutValidationWindow).where(
                         ScoutValidationWindow.wallet_id == wallet_id
+                    )
+                )
+
+            from_stage = existing_row.stage if existing_row is not None else None
+            if from_stage != stage:
+                # Only a genuine transition is logged - a wallet that fails
+                # the screen again on a later day (REJECTED -> REJECTED) is
+                # a repeated verdict, not a move, and would otherwise spam
+                # the drill-down's history with one row per screen run.
+                session.add(
+                    ScoutStageTransition(
+                        wallet_id=wallet_id,
+                        from_stage=from_stage,
+                        to_stage=stage,
+                        reason=_screening_reason(result),
+                        transitioned_at=now,
                     )
                 )
 

@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Scout - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="page-head">
+  <div class="page-head__title">The Scout</div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Pipeline</span></div>
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    Predict-then-verify: a CANDIDATE earned its place from full history alone
+    - unverified. Click a stage to list its wallets.
+  </p>
+  <div class="count-strip">
+    {% for stage in ("CANDIDATE", "WATCHLIST", "VALIDATED", "DECAYING") %}
+    <a class="count-tile clickable-row" href="/scout?stage={{ stage }}"
+       style="text-decoration:none; {% if selected_stage == stage %}outline: 2px solid var(--phosphor);{% endif %}">
+      <div class="micro-label">{{ stage }}</div>
+      <div class="count-tile__value {% if stage == 'VALIDATED' %}text-phosphor{% elif stage == 'DECAYING' %}text-amber{% endif %}">
+        {{ pipeline_counts.get(stage, 0) }}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if selected_stage %}
+<div class="panel">
+  <div class="panel__title">
+    <span>{{ selected_stage }} wallets</span>
+    {% if selected_stage == "WATCHLIST" %}
+    <span class="tag tag--amber" style="font-weight:400;">promising (unconfirmed)</span>
+    {% endif %}
+  </div>
+  {% if stage_wallets %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Wallet</th>
+          <th>Since</th>
+          <th class="num">Historical Wilson-low</th>
+          <th class="num">Forward CLV (last window)</th>
+          <th class="num">Confirmations</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in stage_wallets %}
+        <tr class="clickable-row" data-href="/scout/{{ w.wallet_id }}">
+          <td><a href="/scout/{{ w.wallet_id }}">{{ w.username or (w.address | short_address) }}</a></td>
+          <td class="text-dim">{{ w.entered_stage_at | relative_time }}</td>
+          <td class="num">
+            {% if w.wilson_low is not none %}{{ "%.4f"|format(w.wilson_low) }} (n={{ w.wilson_n }}){% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num {% if w.last_window_avg_clv is not none and w.last_window_avg_clv > 0 %}text-phosphor{% elif w.last_window_avg_clv is not none and w.last_window_avg_clv < 0 %}text-alert{% endif %}">
+            {% if w.last_window_avg_clv is not none %}{{ "%.4f"|format(w.last_window_avg_clv) }} (n={{ w.last_window_n }}){% else %}<span class="text-dim">not tracked yet</span>{% endif %}
+          </td>
+          <td class="num">
+            {% if selected_stage in ("WATCHLIST", "VALIDATED") %}
+            {{ w.confirmations }}/{{ scout_validation_confirmations }}
+            {% else %}
+            <span class="text-dim">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if selected_stage == "WATCHLIST" %}
+            <span class="tag tag--amber">promising (unconfirmed)</span>
+            {% elif selected_stage == "VALIDATED" %}
+            <span class="tag tag--phosphor">confirmed &times;{{ w.confirmations }}</span>
+            {% elif selected_stage == "DECAYING" %}
+            <span class="tag tag--alert">decay streak {{ w.decay_streak or 0 }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No wallets at this stage right now.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>Copy list</span>
+    <span class="text-dim" style="font-weight: 400; font-size: 12px;">VALIDATED, ranked by Wilson-bounded edge + forward CLV, penalized by crowdedness</span>
+  </div>
+  {% if copy_list %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Wallet</th>
+          <th class="num">Historical win rate (Wilson-low)</th>
+          <th class="num">Forward CLV (95% CI)</th>
+          <th class="num">Days validated</th>
+          <th class="num">Trades/day</th>
+          <th>Crowdedness</th>
+          <th>Confirmations</th>
+          <th>Rolling forward CLV</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in copy_list %}
+        <tr class="clickable-row" data-href="/scout/{{ w.wallet_id }}">
+          <td><a href="/scout/{{ w.wallet_id }}">{{ w.username or (w.address | short_address) }}</a></td>
+          <td class="num">
+            {% if w.wilson_low is not none %}{{ "%.4f"|format(w.wilson_low) }} (n={{ w.wilson_n }}){% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num {% if w.forward_clv_ci_low is not none and w.forward_clv_ci_low > 0 %}text-phosphor{% endif %}">
+            {% if w.forward_clv_avg is not none %}
+            {{ "%.4f"|format(w.forward_clv_avg) }} [{{ "%.4f"|format(w.forward_clv_ci_low) }}, {{ "%.4f"|format(w.forward_clv_ci_high) }}] (n={{ w.forward_n }})
+            {% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="num">{{ "%.1f"|format(w.days_validated) }}</td>
+          <td class="num">{{ "%.2f"|format(w.trades_per_day) }}</td>
+          <td>
+            <span class="tag {% if w.crowdedness_tier == 'low' %}tag--phosphor{% elif w.crowdedness_tier == 'medium' %}tag--amber{% else %}tag--alert{% endif %}">
+              {{ w.crowdedness_tier }} ({{ "%.2f"|format(w.crowdedness) }})
+            </span>
+          </td>
+          <td class="num">{{ w.confirmations }}/{{ scout_validation_confirmations }}</td>
+          <td style="width: 120px;">
+            <canvas id="sparkline-{{ w.wallet_id }}"
+                    data-chart-json='{{ {"labels": range(w.sparkline|length)|list, "datasets": [{"data": w.sparkline, "borderColor": "#5CF2C7", "borderWidth": 1.5, "pointRadius": 0, "fill": false, "tension": 0}]} | tojson | safe }}'
+                    style="width:120px; height:32px;">
+            </canvas>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No VALIDATED wallets yet - a CANDIDATE needs a full forward-tracking window (default {{ scout_min_forward_trades }}+ trades) to even reach WATCHLIST, then {{ scout_validation_confirmations }} consecutive passing windows to VALIDATE.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Why forward CLV, not raw PnL</span></div>
+  <p class="text-dim" style="font-size: 13px;">
+    Every stat on this page carries its own sample size (n) - nothing here is
+    trusted below its minimum. Forward CLV, not reported PnL, is the arbiter
+    of every promotion and demotion: PnL is gameable (luck, cherry-picked
+    near-certain bets, or hiding losers as never-closed "zombie" positions),
+    while CLV measures whether the market actually moved a wallet's way after
+    it acted - independent of whether any one bet has resolved yet. A
+    WATCHLIST wallet is "promising" - one out-of-sample window in, not yet
+    trusted. Only VALIDATED means "verified, repeatedly, out of sample" -
+    confirmed across {{ scout_validation_confirmations }} consecutive forward
+    windows, each requiring a 95% confidence interval whose LOWER bound
+    clears zero, not just a positive average that could be a lucky streak.
+  </p>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var canvases = document.querySelectorAll('canvas[id^="sparkline-"]');
+  canvases.forEach(function(canvas) {
+    renderSparkline(canvas.id);
+  });
+})();
+</script>
+{% endblock %}

@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -128,5 +128,35 @@ class ScoutValidationWindow(Base):
     ci_high: Mapped[Decimal] = mapped_column(Money)
     passed: Mapped[bool] = mapped_column()
     computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ScoutStageTransition(Base):
+    """Append-only log of every stage change a wallet has ever made -
+    trader_pipeline itself is current-state only (flag 9), so this is the
+    only place "when did this wallet move, and why" is answerable from,
+    exactly what the dashboard's wallet drill-down needs. from_stage is
+    null for a wallet's very first CANDIDATE entry (nothing to transition
+    from). reason is a short, human-readable sentence built from the same
+    numbers already stored in trader_pipeline.metrics at the moment of the
+    transition (e.g. "forward CLV window passed: avg=0.0312 CI_low=0.0104
+    n=52") - written once, never recomputed, so it stays accurate even
+    after metrics has since moved on.
+    """
+
+    __tablename__ = "scout_stage_transitions"
+    __table_args__ = (
+        Index(
+            "ix_scout_stage_transitions_wallet_id_transitioned_at", "wallet_id", "transitioned_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    from_stage: Mapped[str | None] = mapped_column(String(16))
+    to_stage: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(Text)
+    transitioned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

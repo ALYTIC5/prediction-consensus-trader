@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block title %}{{ wallet.username or (wallet.address | short_address) }} - Scout - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title">
+    <span>{{ wallet.username or "Wallet" }}
+      <span class="text-dim" style="font-weight: 400;">{{ wallet.address | short_address }}</span>
+    </span>
+    {% if wallet.stage == "WATCHLIST" %}
+    <span class="tag tag--amber">promising (unconfirmed) - {{ wallet.confirmations }}/{{ scout_validation_confirmations }} confirmations</span>
+    {% elif wallet.stage == "VALIDATED" %}
+    <span class="tag tag--phosphor">VALIDATED - confirmed &times;{{ wallet.confirmations }}</span>
+    {% elif wallet.stage == "DECAYING" %}
+    <span class="tag tag--alert">DECAYING - streak {{ wallet.metrics.get("decay_streak", 0) }}</span>
+    {% elif wallet.stage == "REJECTED" %}
+    <span class="tag tag--alert">REJECTED</span>
+    {% else %}
+    <span class="tag">{{ wallet.stage }}</span>
+    {% endif %}
+  </div>
+  <p class="text-dim" style="font-family: var(--font-mono); font-size: 12px;">
+    {{ wallet.address }} &middot; {{ wallet.stage }} since {{ wallet.entered_stage_at | relative_time }}
+  </p>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Historical screen (Stage 1)</span></div>
+  {% set m = wallet.metrics %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <tbody>
+        <tr>
+          <td class="micro-label">Total resolved trades</td>
+          <td class="num">{{ m.get("total_trades", "—") }} (of which {{ m.get("zombie_count", 0) }} zombie)</td>
+        </tr>
+        <tr>
+          <td class="micro-label">Win rate (Wilson-bounded)</td>
+          <td class="num">
+            {% if m.get("wilson_low") %}
+            [{{ "%.4f"|format(m.wilson_low|float) }}, {{ "%.4f"|format(m.wilson_high|float) }}]
+            (n={{ m.get("total_trades", 0) }}, {{ m.get("wins", 0) }} wins)
+            {% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td class="micro-label">Profit factor</td>
+          <td class="num">{% if m.get("profit_factor") %}{{ "%.2f"|format(m.profit_factor|float) }}{% else %}<span class="text-dim">undefined (no losses)</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="micro-label">ROI</td>
+          <td class="num">{% if m.get("roi") %}{{ "%.2f"|format(m.roi|float * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="micro-label">Activity rate</td>
+          <td class="num">{{ "%.2f"|format(m.get("activity_rate", 0)|float) }} trades/day</td>
+        </tr>
+        <tr>
+          <td class="micro-label">Profitable-week fraction</td>
+          <td class="num">{{ "%.2f"|format(m.get("profitable_week_fraction", 0)|float) }}</td>
+        </tr>
+        {% if wallet.stage == "REJECTED" and m.get("failing_gates") %}
+        <tr>
+          <td class="micro-label">Failed gates</td>
+          <td class="num text-alert">{{ m.failing_gates | join(", ") }}</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Forward tracking (Stage 2/3)</span></div>
+  {% if m.get("last_window_avg_clv") %}
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    Most recent window: avg forward CLV {{ "%.4f"|format(m.last_window_avg_clv|float) }}
+    [{{ "%.4f"|format(m.last_window_ci_low|float) }}, {{ "%.4f"|format(m.last_window_ci_high|float) }}]
+    (n={{ m.get("last_window_n", 0) }}).
+    {% if m.get("crowdedness") %}Crowdedness {{ "%.2f"|format(m.crowdedness|float) }}.{% endif %}
+    {% if m.get("scout_rank_score") %}Rank score {{ "%.4f"|format(m.scout_rank_score|float) }}.{% endif %}
+  </p>
+  {% else %}
+  <p class="empty-state" style="margin-bottom: var(--space-3);">No forward-tracking window has closed yet.</p>
+  {% endif %}
+
+  {% if wallet.forward_trades %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Market</th>
+          <th>Entered</th>
+          <th class="num">Entry price</th>
+          <th class="num">CLV (horizon)</th>
+          <th class="num">CLV (resolution)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in wallet.forward_trades %}
+        <tr>
+          <td class="mono text-dim">{{ t.condition_id | short_address }}</td>
+          <td class="text-dim">{{ t.entry_at | relative_time }}</td>
+          <td class="num">{{ "%.3f"|format(t.entry_price) }}</td>
+          <td class="num {% if t.clv_horizon is not none and t.clv_horizon > 0 %}text-phosphor{% elif t.clv_horizon is not none and t.clv_horizon < 0 %}text-alert{% endif %}">
+            {% if t.clv_horizon is not none %}{{ "%.4f"|format(t.clv_horizon) }}{% else %}<span class="text-dim">pending</span>{% endif %}
+          </td>
+          <td class="num {% if t.clv_resolution is not none and t.clv_resolution > 0 %}text-phosphor{% elif t.clv_resolution is not none and t.clv_resolution < 0 %}text-alert{% endif %}">
+            {% if t.clv_resolution is not none %}{{ "%.4f"|format(t.clv_resolution) }}{% else %}<span class="text-dim">market open</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No forward trades tracked yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Stage-transition history</span></div>
+  {% if wallet.transitions %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Move</th>
+          <th>Why</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in wallet.transitions %}
+        <tr>
+          <td class="text-dim">{{ t.transitioned_at | relative_time }}</td>
+          <td>{{ t.from_stage or "(new)" }} &rarr; <strong>{{ t.to_stage }}</strong></td>
+          <td class="text-dim">{{ t.reason }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No transitions recorded yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

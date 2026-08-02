@@ -31,6 +31,7 @@ from app.db.models import (
     PositionHistory,
     PriceSnapshot,
     ScoutForwardTrade,
+    ScoutStageTransition,
     ScoutValidationWindow,
     TraderPipeline,
     TraderPipelineStage,
@@ -386,12 +387,34 @@ def close_ready_windows(
 
 
 def _transition(
-    pipeline_row: TraderPipeline, new_stage: str, now: datetime, **extra_metrics: object
+    session: Session,
+    pipeline_row: TraderPipeline,
+    new_stage: str,
+    now: datetime,
+    reason: str,
+    **extra_metrics: object,
 ) -> None:
+    """Mutates the current-state row AND appends the append-only
+    transition-history row the dashboard drill-down reads (docs/
+    SCOUT_DESIGN.md flag 9's reasoning, extended to stage history too).
+    from_stage is captured before mutating pipeline_row.stage - reading it
+    after would always see new_stage, since this is the same in-memory
+    object.
+    """
+    from_stage = pipeline_row.stage
     pipeline_row.stage = new_stage
     pipeline_row.entered_stage_at = now
     pipeline_row.updated_at = now
     pipeline_row.metrics = {**(pipeline_row.metrics or {}), **extra_metrics}
+    session.add(
+        ScoutStageTransition(
+            wallet_id=pipeline_row.wallet_id,
+            from_stage=from_stage,
+            to_stage=new_stage,
+            reason=reason,
+            transitioned_at=now,
+        )
+    )
 
 
 def _count_passing_windows(session: Session, wallet_id: int) -> int:
@@ -461,35 +484,59 @@ def run_forward_tracking(settings: Settings) -> ForwardTrackingSummary:
                 "last_window_n": window.forward_trade_count,
             }
 
+            from_stage = pipeline_row.stage
+            window_summary = (
+                f"forward CLV avg={window.avg_forward_clv:.4f} "
+                f"CI=[{window.ci_low:.4f}, {window.ci_high:.4f}] n={window.forward_trade_count}"
+            )
+
             if not window.passed:
-                _transition(pipeline_row, TraderPipelineStage.REJECTED, now, **window_metrics)
+                _transition(
+                    session,
+                    pipeline_row,
+                    TraderPipelineStage.REJECTED,
+                    now,
+                    reason=f"forward CLV flat/negative: {window_summary}",
+                    **window_metrics,
+                )
                 rejected += 1
                 logger.info(
-                    "scout: wallet %d REJECTED - forward CLV %.4f (CI [%.4f, %.4f], n=%d) "
-                    "flat/negative in %s",
+                    "scout: wallet %d %s -> REJECTED - %s",
                     window.wallet_id,
-                    window.avg_forward_clv,
-                    window.ci_low,
-                    window.ci_high,
-                    window.forward_trade_count,
-                    pipeline_row.stage,
+                    from_stage,
+                    window_summary,
                 )
                 continue
 
             if pipeline_row.stage == TraderPipelineStage.CANDIDATE:
-                _transition(pipeline_row, TraderPipelineStage.WATCHLIST, now, **window_metrics)
+                _transition(
+                    session,
+                    pipeline_row,
+                    TraderPipelineStage.WATCHLIST,
+                    now,
+                    reason=f"forward CLV window passed: {window_summary}",
+                    **window_metrics,
+                )
                 promoted += 1
                 logger.info(
-                    "scout: wallet %d CANDIDATE -> WATCHLIST (forward CLV %.4f, CI low %.4f, n=%d)",
+                    "scout: wallet %d CANDIDATE -> WATCHLIST (%s)",
                     window.wallet_id,
-                    window.avg_forward_clv,
-                    window.ci_low,
-                    window.forward_trade_count,
+                    window_summary,
                 )
             else:
                 confirmations = _count_passing_windows(session, window.wallet_id)
                 if confirmations >= config.validation_confirmations:
-                    _transition(pipeline_row, TraderPipelineStage.VALIDATED, now, **window_metrics)
+                    _transition(
+                        session,
+                        pipeline_row,
+                        TraderPipelineStage.VALIDATED,
+                        now,
+                        reason=(
+                            f"confirmed {confirmations}/{config.validation_confirmations} "
+                            f"consecutive passing windows: {window_summary}"
+                        ),
+                        **window_metrics,
+                    )
                     promoted += 1
                     logger.info(
                         "scout: wallet %d WATCHLIST -> VALIDATED (%d/%d confirmations)",

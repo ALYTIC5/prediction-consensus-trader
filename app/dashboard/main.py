@@ -565,6 +565,53 @@ def optimization_page(request: Request):
     return templates.TemplateResponse(request, "optimization.html", context)
 
 
+# --- The Scout (docs/SCOUT_DESIGN.md) ---
+
+
+@app.get("/scout")
+def scout_page(request: Request, stage: str = ""):
+    """The Scout page: pipeline funnel (click a stage to list its wallets
+    below), the VALIDATED copy list ranked by scout_rank_score, and the
+    honest-labelling static note on forward CLV vs. raw PnL.
+    """
+    settings = get_settings()
+    selected_stage = stage if stage in queries.SCOUT_FUNNEL_STAGES else ""
+    context = {
+        "active_page": "scout",
+        "environment": settings.environment,
+        "pipeline_counts": queries.get_scout_pipeline_counts(),
+        "selected_stage": selected_stage,
+        "stage_wallets": queries.get_scout_wallets_by_stage(selected_stage)
+        if selected_stage
+        else [],
+        "copy_list": queries.get_scout_copy_list(),
+        "scout_min_forward_trades": settings.scout_min_forward_trades,
+        "scout_min_total_trades": settings.scout_min_total_trades,
+        "scout_validation_confirmations": settings.scout_validation_confirmations,
+    }
+    return templates.TemplateResponse(request, "scout.html", context)
+
+
+@app.get("/scout/{wallet_id}")
+def scout_wallet_detail_page(request: Request, wallet_id: int):
+    """One wallet's full Scout picture: Stage 1's metrics breakdown, every
+    forward trade tracked with its own CLV, and the complete stage-
+    transition history - "when it moved and why" (docs/SCOUT_DESIGN.md
+    requirement 3).
+    """
+    detail = queries.get_scout_wallet_detail(wallet_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="wallet not in the Scout pipeline")
+    settings = get_settings()
+    context = {
+        "active_page": "scout",
+        "environment": settings.environment,
+        "wallet": detail,
+        "scout_validation_confirmations": settings.scout_validation_confirmations,
+    }
+    return templates.TemplateResponse(request, "scout_wallet_detail.html", context)
+
+
 # --- Paper trading pages ---
 
 

@@ -12,7 +12,7 @@ for sync route handlers instead.
 """
 
 import logging
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -39,8 +39,13 @@ from app.db.models import (
     PriceSnapshot,
     RiskEvent,
     RuntimeOverride,
+    ScoutForwardTrade,
+    ScoutStageTransition,
+    ScoutValidationWindow,
     Signal,
     SignalStatus,
+    TraderPipeline,
+    TraderPipelineStage,
     TraderScore,
     Wallet,
     WalletCluster,
@@ -1825,3 +1830,319 @@ def get_brier_summary() -> dict:
         overall = aggregate_brier_raw_overall(session)
         trend = aggregate_brier_raw_trend(session)
     return {"overall": overall, "trend": trend}
+
+
+# --- The Scout page (docs/SCOUT_DESIGN.md) - read-only, same as every ---
+# --- other dashboard query. app/scout/* owns all the writes. ---
+
+SCOUT_FUNNEL_STAGES = ("CANDIDATE", "WATCHLIST", "VALIDATED", "DECAYING")
+_CROWD_TIER_LABELS = ("low", "medium", "high")
+
+
+def _decimal_or_none(raw: object) -> Decimal | None:
+    return Decimal(str(raw)) if raw is not None else None
+
+
+def _crowdedness_tier(value: Decimal, bands: list[tuple[Decimal, Decimal]]) -> str:
+    """Same half-open-band convention app/optimization/clv.py's _band_index
+    uses - a value below the lowest band's min falls back to "low" rather
+    than being unbucketable (crowdedness is always >= 0, so this only ever
+    bites a literal 0, which belongs in "low" anyway).
+    """
+    if value < bands[0][0]:
+        return _CROWD_TIER_LABELS[0]
+    for i, (lo, hi) in enumerate(bands):
+        if lo <= value < hi:
+            return _CROWD_TIER_LABELS[i] if i < len(_CROWD_TIER_LABELS) else f"tier{i}"
+    return _CROWD_TIER_LABELS[-1]
+
+
+def _confirmations_by_wallet(session: Session, wallet_ids: list[int]) -> dict[int, int]:
+    """How many passing forward-tracking windows each wallet is carrying -
+    the same "confirmations" count app/scout/forward.py's promotion logic
+    itself uses (docs/SCOUT_DESIGN.md: VALIDATED is tagged with this count,
+    honest labelling requirement 4).
+    """
+    if not wallet_ids:
+        return {}
+    rows = session.execute(
+        select(ScoutValidationWindow.wallet_id, func.count())
+        .where(
+            ScoutValidationWindow.wallet_id.in_(wallet_ids),
+            ScoutValidationWindow.passed.is_(True),
+        )
+        .group_by(ScoutValidationWindow.wallet_id)
+    ).all()
+    return dict(rows)
+
+
+def get_scout_pipeline_counts() -> dict[str, int]:
+    """Wallet count at each of the four funnel stages the Scout page shows
+    (docs/SCOUT_DESIGN.md's pipeline diagram) - REJECTED isn't part of this
+    funnel (flag: it's a recoverable status, re-screened daily, not a
+    terminal stage worth funnel-counting).
+    """
+    with db_session() as session:
+        rows = session.execute(
+            select(TraderPipeline.stage, func.count()).group_by(TraderPipeline.stage)
+        ).all()
+    counts = dict.fromkeys(SCOUT_FUNNEL_STAGES, 0)
+    for stage, count in rows:
+        if stage in counts:
+            counts[stage] = count
+    return counts
+
+
+@dataclass(frozen=True)
+class ScoutPipelineRow:
+    """One wallet's summary row for the Scout page's per-stage listing -
+    clicking a funnel stage shows these."""
+
+    wallet_id: int
+    address: str
+    username: str | None
+    stage: str
+    entered_stage_at: datetime
+    wilson_low: Decimal | None
+    wilson_n: int | None
+    last_window_avg_clv: Decimal | None
+    last_window_n: int | None
+    confirmations: int
+    decay_streak: int | None
+    failing_gates: list[str]
+
+
+def get_scout_wallets_by_stage(stage: str) -> list[ScoutPipelineRow]:
+    """Every wallet currently at one pipeline stage, most recently moved
+    first - the funnel's drill-down when a stage column is clicked.
+    """
+    with db_session() as session:
+        rows = session.execute(
+            select(TraderPipeline, Wallet.address, Wallet.username)
+            .join(Wallet, Wallet.id == TraderPipeline.wallet_id)
+            .where(TraderPipeline.stage == stage)
+            .order_by(TraderPipeline.entered_stage_at.desc())
+        ).all()
+        wallet_ids = [pipeline.wallet_id for pipeline, _, _ in rows]
+        confirmations_by_wallet = _confirmations_by_wallet(session, wallet_ids)
+
+    result = []
+    for pipeline, address, username in rows:
+        metrics = pipeline.metrics or {}
+        result.append(
+            ScoutPipelineRow(
+                wallet_id=pipeline.wallet_id,
+                address=address,
+                username=username,
+                stage=pipeline.stage,
+                entered_stage_at=pipeline.entered_stage_at,
+                wilson_low=_decimal_or_none(metrics.get("wilson_low")),
+                wilson_n=metrics.get("total_trades"),
+                last_window_avg_clv=_decimal_or_none(metrics.get("last_window_avg_clv")),
+                last_window_n=metrics.get("last_window_n"),
+                confirmations=confirmations_by_wallet.get(pipeline.wallet_id, 0),
+                decay_streak=metrics.get("decay_streak"),
+                failing_gates=metrics.get("failing_gates", []),
+            )
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class ScoutCopyListRow:
+    """One VALIDATED wallet's copy-list row - docs/SCOUT_DESIGN.md's
+    Output section: historical edge, forward CLV, how long validated,
+    activity, crowdedness, all with their sample sizes shown alongside
+    (honest-labelling requirement 4 - nothing here is a bare number).
+    """
+
+    wallet_id: int
+    address: str
+    username: str | None
+    wilson_low: Decimal | None
+    wilson_n: int | None
+    forward_clv_avg: Decimal | None
+    forward_clv_ci_low: Decimal | None
+    forward_clv_ci_high: Decimal | None
+    forward_n: int | None
+    days_validated: float
+    trades_per_day: Decimal
+    crowdedness: Decimal
+    crowdedness_tier: str
+    confirmations: int
+    scout_rank_score: Decimal
+    sparkline: list[float]
+
+
+def get_scout_copy_list(limit: int = 50) -> list[ScoutCopyListRow]:
+    """The copy list itself: every VALIDATED wallet, ranked by
+    scout_rank_score (Wilson-bounded historical edge + forward CLV,
+    penalized by crowdedness - app/scout/ranking.py) descending.
+    """
+    settings = get_effective_settings()
+    now = datetime.now(UTC)
+
+    with db_session() as session:
+        rows = session.execute(
+            select(TraderPipeline, Wallet.address, Wallet.username)
+            .join(Wallet, Wallet.id == TraderPipeline.wallet_id)
+            .where(TraderPipeline.stage == TraderPipelineStage.VALIDATED)
+        ).all()
+        wallet_ids = [pipeline.wallet_id for pipeline, _, _ in rows]
+        confirmations_by_wallet = _confirmations_by_wallet(session, wallet_ids)
+
+        windows_by_wallet: dict[int, list[float]] = defaultdict(list)
+        forward_trade_counts: dict[int, int] = {}
+        if wallet_ids:
+            window_rows = session.execute(
+                select(ScoutValidationWindow.wallet_id, ScoutValidationWindow.avg_forward_clv)
+                .where(ScoutValidationWindow.wallet_id.in_(wallet_ids))
+                .order_by(ScoutValidationWindow.window_ended_at.asc())
+            ).all()
+            for wallet_id, avg_clv in window_rows:
+                windows_by_wallet[wallet_id].append(float(avg_clv))
+
+            forward_trade_counts = dict(
+                session.execute(
+                    select(ScoutForwardTrade.wallet_id, func.count())
+                    .where(ScoutForwardTrade.wallet_id.in_(wallet_ids))
+                    .group_by(ScoutForwardTrade.wallet_id)
+                ).all()
+            )
+
+    tier_bands = settings.crowd_tier_bands
+    results = []
+    for pipeline, address, username in rows:
+        metrics = pipeline.metrics or {}
+        candidate_since_raw = metrics.get("candidate_since")
+        candidate_since = (
+            datetime.fromisoformat(candidate_since_raw)
+            if candidate_since_raw
+            else pipeline.entered_stage_at
+        )
+        # Floored well above zero - a wallet validated moments ago still
+        # gets a finite (if very high, honestly so) trades/day figure
+        # rather than a division error.
+        days_tracked_raw = Decimal(str((now - candidate_since).total_seconds() / 86400))
+        days_tracked = max(days_tracked_raw, Decimal("0.01"))
+        trade_count = forward_trade_counts.get(pipeline.wallet_id, 0)
+        crowdedness = _decimal_or_none(metrics.get("crowdedness")) or Decimal(0)
+
+        results.append(
+            ScoutCopyListRow(
+                wallet_id=pipeline.wallet_id,
+                address=address,
+                username=username,
+                wilson_low=_decimal_or_none(metrics.get("wilson_low")),
+                wilson_n=metrics.get("total_trades"),
+                forward_clv_avg=_decimal_or_none(metrics.get("last_window_avg_clv")),
+                forward_clv_ci_low=_decimal_or_none(metrics.get("last_window_ci_low")),
+                forward_clv_ci_high=_decimal_or_none(metrics.get("last_window_ci_high")),
+                forward_n=metrics.get("last_window_n"),
+                days_validated=(now - pipeline.entered_stage_at).total_seconds() / 86400,
+                trades_per_day=Decimal(trade_count) / days_tracked,
+                crowdedness=crowdedness,
+                crowdedness_tier=_crowdedness_tier(crowdedness, tier_bands),
+                confirmations=confirmations_by_wallet.get(pipeline.wallet_id, 0),
+                scout_rank_score=_decimal_or_none(metrics.get("scout_rank_score")) or Decimal(0),
+                sparkline=windows_by_wallet.get(pipeline.wallet_id, []),
+            )
+        )
+
+    results.sort(key=lambda row: row.scout_rank_score, reverse=True)
+    return results[:limit]
+
+
+@dataclass(frozen=True)
+class ScoutForwardTradeRow:
+    condition_id: str
+    asset: str
+    entry_price: Decimal
+    entry_at: datetime
+    clv_horizon: Decimal | None
+    clv_resolution: Decimal | None
+
+
+@dataclass(frozen=True)
+class ScoutTransitionRow:
+    from_stage: str | None
+    to_stage: str
+    reason: str
+    transitioned_at: datetime
+
+
+@dataclass(frozen=True)
+class ScoutWalletDetail:
+    """The wallet drill-down's full picture: Stage 1's complete metrics
+    breakdown, every forward trade tracked with its own CLV, and the full
+    stage-transition history - "when it moved and why" (docs/
+    SCOUT_DESIGN.md requirement 3).
+    """
+
+    wallet_id: int
+    address: str
+    username: str | None
+    stage: str
+    entered_stage_at: datetime
+    metrics: dict
+    confirmations: int
+    forward_trades: list[ScoutForwardTradeRow]
+    transitions: list[ScoutTransitionRow]
+
+
+def get_scout_wallet_detail(wallet_id: int) -> ScoutWalletDetail | None:
+    with db_session() as session:
+        pipeline = session.get(TraderPipeline, wallet_id)
+        if pipeline is None:
+            return None
+        wallet = session.get(Wallet, wallet_id)
+
+        forward_trades = (
+            session.execute(
+                select(ScoutForwardTrade)
+                .where(ScoutForwardTrade.wallet_id == wallet_id)
+                .order_by(ScoutForwardTrade.entry_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        transitions = (
+            session.execute(
+                select(ScoutStageTransition)
+                .where(ScoutStageTransition.wallet_id == wallet_id)
+                .order_by(ScoutStageTransition.transitioned_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        confirmations = _confirmations_by_wallet(session, [wallet_id]).get(wallet_id, 0)
+
+    return ScoutWalletDetail(
+        wallet_id=wallet_id,
+        address=wallet.address if wallet is not None else str(wallet_id),
+        username=wallet.username if wallet is not None else None,
+        stage=pipeline.stage,
+        entered_stage_at=pipeline.entered_stage_at,
+        metrics=pipeline.metrics or {},
+        confirmations=confirmations,
+        forward_trades=[
+            ScoutForwardTradeRow(
+                condition_id=trade.condition_id,
+                asset=trade.asset,
+                entry_price=trade.entry_price,
+                entry_at=trade.entry_at,
+                clv_horizon=trade.clv_horizon,
+                clv_resolution=trade.clv_resolution,
+            )
+            for trade in forward_trades
+        ],
+        transitions=[
+            ScoutTransitionRow(
+                from_stage=transition.from_stage,
+                to_stage=transition.to_stage,
+                reason=transition.reason,
+                transitioned_at=transition.transitioned_at,
+            )
+            for transition in transitions
+        ],
+    )
