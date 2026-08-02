@@ -25,12 +25,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config.effective import get_effective_settings
 from app.config.settings import Settings
-from app.db.models import Market, Position, PositionHistory, TraderPipeline, TraderPipelineStage
+from app.db.models import (
+    Market,
+    Position,
+    PositionHistory,
+    ScoutForwardTrade,
+    ScoutValidationWindow,
+    TraderPipeline,
+    TraderPipelineStage,
+)
 from app.db.session import db_session
 from app.risk.calibration import wilson_interval
 
@@ -327,6 +335,26 @@ def run_historical_screen(settings: Settings) -> ScreeningSummary:
             result = compute_screening_result(records, now, config)
             stage = TraderPipelineStage.CANDIDATE if result.passed else TraderPipelineStage.REJECTED
             metrics = _metrics_json(result)
+
+            if stage == TraderPipelineStage.CANDIDATE:
+                # The anchor Stage 2 uses for both "forward trades start
+                # here" and "window 1 starts here" - set fresh every time a
+                # wallet (re-)becomes CANDIDATE, never inherited from a
+                # prior attempt. A wallet re-entering CANDIDATE after a
+                # prior REJECTED verdict gets a clean slate (docs/
+                # SCOUT_DESIGN.md flag 11: "no memory of the earlier
+                # rejection held against it") - stale forward-tracking data
+                # from that earlier attempt is deleted, not left to confuse
+                # window/confirmation counting under the new attempt.
+                metrics["candidate_since"] = now.isoformat()
+                session.execute(
+                    delete(ScoutForwardTrade).where(ScoutForwardTrade.wallet_id == wallet_id)
+                )
+                session.execute(
+                    delete(ScoutValidationWindow).where(
+                        ScoutValidationWindow.wallet_id == wallet_id
+                    )
+                )
 
             if existing_row is None:
                 session.add(

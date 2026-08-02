@@ -65,13 +65,16 @@ class ScoutForwardTrade(Base):
     wallet's real skill, not simulating a trade of its own.
 
     Append-only, one row per forward-tracked position opened from the
-    moment a wallet enters CANDIDATE onward (Stage 2, not yet implemented -
-    this table's schema lands now per the design doc so nothing downstream
-    is ever a hardcoded value). Filled in over up to two passes, same
-    "computed once time/resolution actually happen" shape SignalCLV uses:
-    price_at_horizon/clv_horizon once SCOUT_CLV_HORIZON_HOURS has elapsed,
-    price_at_resolution/clv_resolution once the market resolves
-    unambiguously.
+    moment a wallet enters CANDIDATE onward (Stage 2). Filled in over up to
+    two passes, same "computed once time/resolution actually happen" shape
+    SignalCLV uses: price_at_horizon/clv_horizon once
+    SCOUT_CLV_HORIZON_HOURS has elapsed, price_at_resolution/clv_resolution
+    once the market resolves unambiguously.
+
+    position_history_id is the exact dedup key against the OPENED event
+    that produced this row (unique) - a timestamp-based dedup (wallet_id +
+    condition_id + asset + entry_at) would be fragile if two OPENED events
+    ever landed at the identical instant; this is not.
     """
 
     __tablename__ = "scout_forward_trades"
@@ -79,6 +82,7 @@ class ScoutForwardTrade(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    position_history_id: Mapped[int] = mapped_column(ForeignKey("position_history.id"), unique=True)
     condition_id: Mapped[str] = mapped_column(String(66))
     asset: Mapped[str] = mapped_column(String(80))
     entry_price: Mapped[Decimal] = mapped_column(Money)
@@ -89,4 +93,40 @@ class ScoutForwardTrade(Base):
     clv_resolution: Mapped[Decimal | None] = mapped_column(Money)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ScoutValidationWindow(Base):
+    """One completed forward-tracking window's outcome - append-only, one
+    row per wallet per closed window (docs/SCOUT_DESIGN.md flag 9: needed
+    to count SCOUT_VALIDATION_CONFIRMATIONS/SCOUT_DECAY_WINDOWS consecutive
+    passes, which trader_pipeline's current-state row alone can't hold).
+
+    A window closes once it has run at least SCOUT_VALIDATION_DAYS AND
+    accumulated at least SCOUT_MIN_FORWARD_TRADES forward trades with a
+    known clv_horizon - never on a thin sample. passed = ci_low > 0 is
+    Stage 2's promotion criterion specifically; Stage 3's decay check reads
+    avg_forward_clv against SCOUT_DECAY_THRESHOLD directly and ignores
+    passed (design flag 10: promotion needs a CI bound, decay reacts to
+    the point estimate - the same window mechanism serves both).
+    """
+
+    __tablename__ = "scout_validation_windows"
+    __table_args__ = (
+        Index(
+            "ix_scout_validation_windows_wallet_id_window_ended_at", "wallet_id", "window_ended_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    forward_trade_count: Mapped[int] = mapped_column()
+    avg_forward_clv: Mapped[Decimal] = mapped_column(Money)
+    ci_low: Mapped[Decimal] = mapped_column(Money)
+    ci_high: Mapped[Decimal] = mapped_column(Money)
+    passed: Mapped[bool] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )

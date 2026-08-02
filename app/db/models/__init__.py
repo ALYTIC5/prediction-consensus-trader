@@ -14,7 +14,12 @@ from app.db.models.paper import PaperPortfolio, PaperTrade, PaperTradeStatus
 from app.db.models.positions import Position, PositionEventType, PositionHistory
 from app.db.models.risk import RiskDecisionType, RiskEvent
 from app.db.models.scores import TraderScore
-from app.db.models.scout import ScoutForwardTrade, TraderPipeline, TraderPipelineStage
+from app.db.models.scout import (
+    ScoutForwardTrade,
+    ScoutValidationWindow,
+    TraderPipeline,
+    TraderPipelineStage,
+)
 from app.db.models.signals import Signal, SignalStatus
 from app.db.models.system import AppState
 from app.db.models.wallets import LeaderboardSnapshot, Wallet
@@ -38,6 +43,7 @@ __all__ = [
     "RiskEvent",
     "RuntimeOverride",
     "ScoutForwardTrade",
+    "ScoutValidationWindow",
     "Signal",
     "SignalCLV",
     "SignalStatus",

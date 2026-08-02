@@ -423,22 +423,27 @@ class Settings(BaseSettings):
     # just the win rate (design flag 6).
     scout_zombie_grace_days: int = 14
 
-    # Stage 2: forward tracking (not yet implemented - settings land now
-    # per the design doc so nothing downstream is ever a hardcoded value).
+    # Stage 2: forward tracking (app/scout/forward.py).
     scout_forward_tracking_interval_seconds: int = 3600
     scout_clv_horizon_hours: int = 24
     scout_validation_days: int = 14
     scout_min_forward_trades: int = 40
     scout_validation_confirmations: int = 2
 
-    # Stage 3: decay monitoring (not yet implemented).
+    # Stage 3: decay monitoring.
     # Point-estimate threshold, not a [0,1]-bounded fraction - CLV is a
     # price delta and can be negative (design flag 10: decay reacts to the
     # rolling mean, not a CI bound).
     scout_decay_threshold: Decimal = Decimal("0")
     scout_decay_windows: int = 2
+    # Not in docs/SCOUT_DESIGN.md's original settings table (that doc gives
+    # Stage 3 "the same cadence as Stage 2") - added per explicit
+    # instruction when Stage 2/3 were implemented: the decay check runs on
+    # its own daily schedule, distinct from forward-tracking's hourly one.
+    scout_decay_check_interval_hours: int = 24
 
-    # Crowdedness integration (not yet implemented).
+    # Crowdedness integration (app/scout/ranking.py) - reads
+    # wallet_crowdedness (Phase 6 workstream 7) directly.
     scout_crowd_penalty_weight: Decimal = Decimal("0.3")
 
     @model_validator(mode="after")
@@ -527,6 +532,7 @@ class Settings(BaseSettings):
             "scout_min_forward_trades",
             "scout_validation_confirmations",
             "scout_decay_windows",
+            "scout_decay_check_interval_hours",
         )
         for name in positive_fields:
             value = getattr(self, name)
