@@ -64,6 +64,15 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        # pg_advisory_lock is session-scoped, not transaction-scoped, so
+        # committing here doesn't release it - it only closes out the
+        # transaction SQLAlchemy auto-began for that SELECT. Without this,
+        # Alembic's own begin_transaction() below silently joins that
+        # already-open transaction instead of managing one of its own, and
+        # the migration's DDL is never actually committed - it looked like
+        # "upgrade head" succeeded (no error, exit 0) while leaving the
+        # database completely unchanged.
+        connection.commit()
         try:
             context.configure(
                 connection=connection,
