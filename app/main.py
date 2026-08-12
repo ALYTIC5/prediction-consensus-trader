@@ -101,7 +101,7 @@ async def _run() -> None:
                 interval_seconds=86400,
             ),
         ]
-        await run_jobs(jobs, stop_event)
+        await run_jobs(jobs, stop_event, service="collectors")
     finally:
         await client.aclose()
 

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Job Health - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel__title"><span>Job health ({{ jobs|length }})</span></div>
+  {% if jobs %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Service</th>
+          <th>Job</th>
+          <th>Last success</th>
+          <th>Last failure</th>
+          <th>Last error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><span class="status-dot status-dot--{{ job.status }}"></span> {{ job.status }}</td>
+          <td>{{ job.service }}</td>
+          <td>{{ job.job_name }}</td>
+          <td>{{ job.last_success_at | relative_time }}</td>
+          <td>{{ job.last_failure_at | relative_time }}</td>
+          <td>{{ job.last_error or "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No jobs have reported a heartbeat yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

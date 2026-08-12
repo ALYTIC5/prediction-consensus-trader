@@ -21,6 +21,8 @@ import logging
 import signal
 
 from app.config.settings import get_settings
+from app.db.revision import check_schema_current
+from app.db.session import get_engine
 from app.scheduler.runner import PeriodicJob, run_jobs
 from app.scout.decay import run_decay_check_job
 from app.scout.forward import run_forward_tracking_job
@@ -33,6 +35,9 @@ logger = logging.getLogger(__name__)
 async def _run() -> None:
     settings = get_settings()
     setup_logging(settings.log_level, settings.log_dir, settings.log_to_file)
+
+    # Fail the deploy, not every job tick forever - see app/db/revision.py.
+    check_schema_current("scout", get_engine())
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -65,7 +70,7 @@ async def _run() -> None:
             interval_seconds=settings.scout_decay_check_interval_hours * 3600,
         ),
     ]
-    await run_jobs(jobs, stop_event)
+    await run_jobs(jobs, stop_event, service="scout")
 
 
 def main() -> None:

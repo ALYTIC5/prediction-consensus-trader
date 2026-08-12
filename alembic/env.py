@@ -8,7 +8,7 @@ the running app would, in every environment, with no second place to update.
 
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 import app.db.models  # noqa: F401  (registers every model on Base.metadata)
 from alembic import context
@@ -44,6 +44,16 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+# Arbitrary fixed key for pg_advisory_lock - only needs to be constant across
+# every migrator, never collide with another advisory lock user, and fit in
+# a bigint. Two services can now both have "alembic upgrade head" as a
+# pre-deploy command (collectors and scout) without racing DDL against each
+# other: the second migrator blocks here until the first's transaction (and
+# therefore its lock) releases, then finds itself already at head and exits
+# immediately.
+_MIGRATION_LOCK_KEY = 727_310_001
+
+
 def run_migrations_online() -> None:
     """Run migrations against a live DB connection."""
     connectable = engine_from_config(
@@ -53,14 +63,20 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-        )
+        connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+        try:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+            )
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+            )
 
 
 if context.is_offline_mode():

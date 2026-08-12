@@ -22,13 +22,14 @@ from app.db.models.scout import (
     TraderPipelineStage,
 )
 from app.db.models.signals import Signal, SignalStatus
-from app.db.models.system import AppState
+from app.db.models.system import AppState, JobHeartbeat
 from app.db.models.wallets import LeaderboardSnapshot, Wallet
 
 __all__ = [
     "AppState",
     "ClusterBanditState",
     "ConsensusRun",
+    "JobHeartbeat",
     "LeaderboardSnapshot",
     "Market",
     "MarketHistory",

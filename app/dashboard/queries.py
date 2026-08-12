@@ -28,6 +28,7 @@ from app.config.settings import Settings, get_settings
 from app.db.models import (
     ClusterBanditState,
     ConsensusRun,
+    JobHeartbeat,
     LeaderboardSnapshot,
     Market,
     MarketHistory,
@@ -83,6 +84,29 @@ class Heartbeat:
     last_write: datetime | None
     interval_seconds: int
     status: str  # "fresh" | "stale" | "dead"
+
+
+@dataclass(frozen=True)
+class JobHealth:
+    """One scheduled job's last-run status, sourced from job_heartbeats -
+    covers every job in every service (app.scheduler.runner writes this on
+    every single tick), unlike Heartbeat above which only covers the four
+    collector jobs with an obvious output table to read a timestamp from.
+
+    status is derived from last_success_at, not last_run_at: a job that
+    runs every interval but fails every time must show as stale/dead, not
+    fresh just because it's still ticking.
+    """
+
+    service: str
+    job_name: str
+    interval_seconds: int
+    last_status: str  # "ok" | "failed" - the outcome of the most recent run
+    last_run_at: datetime
+    last_success_at: datetime | None
+    last_failure_at: datetime | None
+    last_error: str | None
+    status: str  # "fresh" | "stale" | "dead", derived from last_success_at
 
 
 @dataclass(frozen=True)
@@ -177,6 +201,38 @@ def get_collector_heartbeats(settings: Settings) -> list[Heartbeat]:
             status=_heartbeat_status(last_write, interval_seconds, now),
         )
         for name, last_write, interval_seconds in rows
+    ]
+
+
+def get_job_health() -> list[JobHealth]:
+    """Every job's last-run status across every service, for /healthz's
+    dead-job check and the /health page. Ordered service then job_name so
+    both callers get a stable, grouped layout for free.
+    """
+    now = datetime.now(UTC)
+
+    with db_session() as session:
+        rows = (
+            session.execute(
+                select(JobHeartbeat).order_by(JobHeartbeat.service, JobHeartbeat.job_name)
+            )
+            .scalars()
+            .all()
+        )
+
+    return [
+        JobHealth(
+            service=row.service,
+            job_name=row.job_name,
+            interval_seconds=row.interval_seconds,
+            last_status=row.last_status,
+            last_run_at=row.last_run_at,
+            last_success_at=row.last_success_at,
+            last_failure_at=row.last_failure_at,
+            last_error=row.last_error,
+            status=_heartbeat_status(row.last_success_at, row.interval_seconds, now),
+        )
+        for row in rows
     ]
 
 

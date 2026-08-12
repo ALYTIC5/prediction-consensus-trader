@@ -26,6 +26,8 @@ from app.config.effective import get_effective_settings
 from app.config.settings import get_settings
 from app.dashboard import queries
 from app.dashboard.filters import relative_time, short_address, to_json
+from app.db.revision import check_schema_current
+from app.db.session import get_engine
 from app.optimization.crowdedness import interpret_crowdedness_validation
 
 _EMERGENCY_STOP_VARIANTS = ("compact", "prominent")
@@ -43,6 +45,17 @@ if _startup_settings.environment == "production" and not (
         "ENVIRONMENT=production - the console has no other access control, "
         "and production must never run reachable-from-outside with no auth."
     )
+
+# Fail the deploy, not every page load forever - see app/db/revision.py.
+# Production-only, same reasoning as the auth guard above: local dev is
+# explicitly allowed to run against a database that hasn't been migrated
+# yet (docker compose up without a migrate step is a normal dev moment,
+# never a normal production one), and this also keeps a real network
+# connection attempt out of the test suite's module-reload path, which
+# would otherwise block on Settings' default localhost DATABASE_URL on
+# every single test file that reloads this module.
+if _startup_settings.environment == "production":
+    check_schema_current("dashboard", get_engine())
 
 app = FastAPI(title="polybot console")
 app.mount("/static", StaticFiles(directory=_DASHBOARD_DIR / "static"), name="static")
@@ -114,6 +127,8 @@ def healthz() -> JSONResponse:
         try:
             heartbeats = queries.get_collector_heartbeats(get_settings())
             dead_jobs = [hb.name for hb in heartbeats if hb.status == "dead"]
+            job_health = queries.get_job_health()
+            dead_jobs += [f"{jh.service}/{jh.job_name}" for jh in job_health if jh.status == "dead"]
         except Exception:
             logger.warning("healthz: heartbeat check failed", exc_info=True)
             db_ok = False
@@ -785,3 +800,19 @@ def logs_fragment(request: Request):
     """htmx-polled fragment: the log tail, refreshed every 5s (pausable)."""
     context = {"lines": queries.get_log_tail()}
     return templates.TemplateResponse(request, "_logs.html", context)
+
+
+@app.get("/health")
+def job_health_page(request: Request):
+    """Every scheduled job across every service in one table - fresh/stale/
+    dead, last success, last failure, last error. Same data /healthz's
+    dead_jobs check reads, laid out for a human instead of collapsed into a
+    pass/fail. Built so a silently-dead job (Scout ran for 10 days writing
+    nothing before this existed) is visible at a glance instead of only
+    discoverable by reading production logs.
+    """
+    context = {
+        "active_page": "health",
+        "jobs": queries.get_job_health(),
+    }
+    return templates.TemplateResponse(request, "health.html", context)
