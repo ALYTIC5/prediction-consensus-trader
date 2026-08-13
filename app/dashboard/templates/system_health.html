@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}System Health - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="micro-label" style="margin-bottom: var(--space-2);">
+  System audit &middot; code presence + live data evidence, one check per row
+</div>
+
+<div class="count-strip">
+  <div class="count-tile">
+    <div class="micro-label">Passed</div>
+    <div class="count-tile__value text-phosphor">{{ counts.PASS or 0 }}</div>
+  </div>
+  <div class="count-tile">
+    <div class="micro-label">Warned</div>
+    <div class="count-tile__value text-amber">{{ counts.WARN or 0 }}</div>
+  </div>
+  <div class="count-tile">
+    <div class="micro-label">Failed</div>
+    <div class="count-tile__value text-alert">{{ counts.FAIL or 0 }}</div>
+  </div>
+</div>
+
+{% if any_failed %}
+<div class="panel" style="border-color: var(--alert);">
+  <div class="panel__title"><span class="text-alert">*** {{ counts.FAIL }} check(s) FAILED - see below ***</span></div>
+</div>
+{% endif %}
+
+<p class="text-dim micro-label" style="margin: var(--space-3) 0;">
+  This page covers every DB-based and pure-function check. The two HTTP checks (/healthz,
+  each dashboard route's status) only make sense run from outside this process - use
+  <code>uv run python scripts/system_audit.py</code> for the full report including those.
+</p>
+
+{% for section, items in sections.items() %}
+<div class="panel">
+  <div class="panel__title"><span>{{ section }}</span></div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Check</th>
+          <th>Evidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in items %}
+        <tr>
+          <td>
+            <span class="tag {% if r.status == 'PASS' %}tag--phosphor{% elif r.status == 'WARN' %}tag--amber{% else %}tag--alert{% endif %}">{{ r.status }}</span>
+          </td>
+          <td>{{ r.name }}</td>
+          <td class="text-dim">{{ r.evidence }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endfor %}
+
+{% endblock %}

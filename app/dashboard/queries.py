@@ -65,6 +65,7 @@ from app.paper.engine import resolve_calibration_config, resolve_risk_config
 from app.paper.metrics import PortfolioMetrics, TradeData, compute_portfolio_metrics
 from app.risk.calibration import compute_bucket_stats, load_resolved_trade_records
 from app.risk.rules import RiskRule
+from app.utils.system_audit import CheckResult, run_checks
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,17 @@ def get_job_health() -> list[JobHealth]:
         )
         for row in rows
     ]
+
+
+def get_system_audit() -> list[CheckResult]:
+    """The System Health page's report - the same checks
+    scripts/system_audit.py runs (schema drift, collectors, consensus,
+    paper trading, risk, phase6/scout/diagnostics, job heartbeats,
+    retention pruning), minus the two HTTP checks that only make sense run
+    from outside this process (a page checking its own reachability by
+    calling itself is circular) - run those via the CLI script instead.
+    """
+    return run_checks(get_settings())
 
 
 def get_overview_counts() -> OverviewCounts:

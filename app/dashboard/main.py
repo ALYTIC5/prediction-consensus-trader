@@ -12,6 +12,7 @@ below.
 import base64
 import logging
 import secrets
+from collections import Counter
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -816,3 +817,29 @@ def job_health_page(request: Request):
         "jobs": queries.get_job_health(),
     }
     return templates.TemplateResponse(request, "health.html", context)
+
+
+@app.get("/system-health")
+def system_health_page(request: Request):
+    """The System Health page: the full repeatable audit (schema drift,
+    collectors, consensus, paper trading, risk, phase6/scout/diagnostics,
+    job heartbeats, retention pruning) as PASS/WARN/FAIL with evidence -
+    the same checks scripts/system_audit.py runs, rendered for a human.
+    The two HTTP-based checks that script also runs (/healthz, each
+    dashboard route's status) aren't included here - run the script itself
+    for those, since a page checking its own reachability by calling
+    itself is circular.
+    """
+    results = queries.get_system_audit()
+    counts = Counter(r.status for r in results)
+    sections: dict[str, list] = {}
+    for result in results:
+        sections.setdefault(result.section, []).append(result)
+    context = {
+        "active_page": "system_health",
+        "environment": get_settings().environment,
+        "sections": sections,
+        "counts": counts,
+        "any_failed": counts["FAIL"] > 0,
+    }
+    return templates.TemplateResponse(request, "system_health.html", context)

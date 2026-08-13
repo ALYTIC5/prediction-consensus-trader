@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     dashboard_user: str | None = None
     dashboard_password: str | None = None
 
+    # scripts/system_audit.py's own HTTP checks against the dashboard's
+    # routes - read nowhere else. Defaults to local dev; point it at a
+    # deployed dashboard (and set DASHBOARD_USER/PASSWORD) to audit that
+    # instead, or pass --dashboard-url to override without touching .env.
+    dashboard_base_url: str = "http://127.0.0.1:8000"
+
     # None means "not set" - scripts/run_dashboard.py uses that (not just
     # the resolved port number) to tell "Railway set PORT" apart from
     # "nothing set it, use the local-dev default," which decides both the

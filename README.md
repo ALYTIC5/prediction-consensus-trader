@@ -42,6 +42,27 @@ signal-generation cycle, no restart, and disappear if you reset them or
 truncate the table. `.env` stays the one source of truth for everything
 that actually needs a restart.
 
+## System audit
+
+```bash
+uv run python scripts/system_audit.py
+```
+
+Read-only, safe to run against production: verifies every subsystem
+(collectors, consensus, paper trading, risk, phase 6/scout/diagnostics, ops)
+by checking BOTH that the code is intact (pure-function smoke tests against
+the real diffing/consensus/fills/risk logic) AND that it has actually
+produced recent data - not just that a job "succeeded." Flags schema drift
+(DB alembic revision vs code head) loudest of all - that exact drift once
+kept the Scout silently dead for 10 days. Prints PASS/WARN/FAIL per check
+with evidence inline, exits non-zero if anything FAILed.
+
+Points at `127.0.0.1:8000` by default. Add `--dashboard-url <url>` to audit
+a deployed dashboard instead (set `DASHBOARD_USER`/`DASHBOARD_PASSWORD` in
+`.env` first if it's auth-gated), or `--skip-http` for a DB-only run with no
+network calls to the dashboard at all. The same DB-based checks also render
+as a page in the console itself - see System Health in the nav.
+
 ## Folders
 
 | Folder               | Purpose                                                |
