@@ -27,7 +27,14 @@ class WalletCluster(Base):
     __table_args__ = (Index("ix_wallet_clusters_cluster_id", "cluster_id"),)
 
     wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"), primary_key=True)
-    cluster_id: Mapped[str] = mapped_column(String(16))
+    # 64, not 16: cluster_id_for() itself only ever produces a 16-hex-char
+    # hash, but this column also has to survive whatever the *next* thing
+    # that writes a cluster_id gets wrong - see cluster_bandit_state below,
+    # which briefly took the bandit job down every run because its own
+    # VARCHAR(16) had zero headroom for a caller's bug (a raw 42-char wallet
+    # address used as a singleton fallback). Same margin applied here
+    # defensively, even though nothing has ever overflowed this column.
+    cluster_id: Mapped[str] = mapped_column(String(64))
     cluster_size: Mapped[int] = mapped_column()
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -149,7 +156,14 @@ class ClusterBanditState(Base):
 
     __tablename__ = "cluster_bandit_state"
 
-    cluster_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # Was VARCHAR(16) - exactly wide enough for a real cluster_id_for()
+    # hash and not one character more, so a caller that ever passed a raw
+    # wallet address (42 chars) as a singleton-cluster fallback overflowed
+    # it on every single write, rolling back the entire batch insert and
+    # silently killing this job (see app/optimization/bandit.py's
+    # _resolve_cluster_id() - that was the actual bug; this widening is
+    # defense in depth on top of the real fix, not a substitute for it).
+    cluster_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     alpha: Mapped[int] = mapped_column()
     beta: Mapped[int] = mapped_column()
     observations: Mapped[int] = mapped_column()

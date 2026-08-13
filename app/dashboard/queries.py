@@ -11,6 +11,7 @@ satisfy explicitly with asyncio.to_thread, just via FastAPI's own mechanism
 for sync route handlers instead.
 """
 
+import itertools
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -615,6 +616,16 @@ class MarketDetail:
 _SPARKLINE_MAX_POINTS = 200
 _SPARKLINE_RECENT_FULL_RES = 50
 
+# get_markets() passes every open market's outcome-token assets here in one
+# call - with 0 markets ever having closed so far, "open" is close enough to
+# "every market" that this set can run into the tens of thousands (~2 assets
+# per market). A single `.in_(assets)` query binds one parameter per asset;
+# psycopg/Postgres cap a query at 65535 total bind parameters, and that
+# limit is exactly what GET /markets started throwing OperationalError on
+# once the market catalog grew past ~32.7k rows. Batched well under that
+# ceiling so this stays correct at any catalog size, not just today's.
+_ASSET_QUERY_BATCH_SIZE = 5000
+
 
 def _latest_prices_for_assets(session: Session, assets: set[str]) -> dict[str, Decimal]:
     """Each asset's most recent prices row. Same window-function shape as
@@ -622,22 +633,30 @@ def _latest_prices_for_assets(session: Session, assets: set[str]) -> dict[str, D
     than imported, since that module is a different layer (signal
     generation, not dashboard reads) and this query is small enough that
     sharing it isn't worth a cross-layer dependency.
+
+    Batched (see _ASSET_QUERY_BATCH_SIZE) - `assets` here can be large
+    enough to blow past Postgres's per-query bind-parameter limit, unlike
+    generator.py's version, which only ever sees one freshness window's
+    worth of recently-active assets.
     """
     if not assets:
         return {}
-    ranked = (
-        select(
-            PriceSnapshot.asset,
-            PriceSnapshot.price,
-            func.row_number()
-            .over(partition_by=PriceSnapshot.asset, order_by=PriceSnapshot.captured_at.desc())
-            .label("rn"),
+    prices_by_asset: dict[str, Decimal] = {}
+    for batch in itertools.batched(assets, _ASSET_QUERY_BATCH_SIZE):
+        ranked = (
+            select(
+                PriceSnapshot.asset,
+                PriceSnapshot.price,
+                func.row_number()
+                .over(partition_by=PriceSnapshot.asset, order_by=PriceSnapshot.captured_at.desc())
+                .label("rn"),
+            )
+            .where(PriceSnapshot.asset.in_(batch))
+            .subquery()
         )
-        .where(PriceSnapshot.asset.in_(assets))
-        .subquery()
-    )
-    rows = session.execute(select(ranked.c.asset, ranked.c.price).where(ranked.c.rn == 1)).all()
-    return dict(rows)
+        rows = session.execute(select(ranked.c.asset, ranked.c.price).where(ranked.c.rn == 1)).all()
+        prices_by_asset.update(rows)
+    return prices_by_asset
 
 
 def _build_outcome_prices(

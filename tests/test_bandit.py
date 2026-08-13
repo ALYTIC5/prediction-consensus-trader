@@ -4,8 +4,10 @@ network. See docs/PHASE6_DESIGN.md workstream 5.
 
 from decimal import Decimal
 
+from app.db.models import ClusterBanditState
 from app.optimization.bandit import (
     BanditConfig,
+    _resolve_cluster_id,
     compute_multiplier,
     compute_state_from_observations,
     effective_weighted_score,
@@ -171,3 +173,51 @@ def test_effective_weighted_score_unclustered_wallet_is_its_own_singleton():
 
     score = effective_weighted_score(contributors, cluster_of, multiplier_of)
     assert score == Decimal("1.2")  # two independent singleton clusters, summed
+
+
+# --- _resolve_cluster_id: the cluster_bandit_state.cluster_id VARCHAR
+# truncation regression (collectors/bandit was dead on every run because
+# this used to fall back to the raw, unbounded wallet address) ---
+
+# A real Polymarket wallet address: "0x" + 40 hex chars = 42 chars total -
+# well past the column's old 16-char width, and still past its current
+# 64-char one if this regressed to something unbounded again.
+_UNCLUSTERED_ADDRESS = "0x" + "a" * 40
+
+
+def test_unclustered_wallet_gets_a_bounded_deterministic_id():
+    cluster_id = _resolve_cluster_id(_UNCLUSTERED_ADDRESS, cluster_of={})
+
+    max_len = ClusterBanditState.__table__.c.cluster_id.type.length
+    assert len(cluster_id) <= max_len, (
+        f"cluster_id {cluster_id!r} ({len(cluster_id)} chars) would overflow "
+        f"cluster_bandit_state.cluster_id (VARCHAR({max_len})) - this is exactly "
+        f"the truncation that killed the bandit job"
+    )
+    assert cluster_id != _UNCLUSTERED_ADDRESS, "must never fall back to the raw address itself"
+
+
+def test_unclustered_wallet_gets_the_same_id_every_time():
+    # Deterministic, not random - two runs over the same (still-unclustered)
+    # wallet must agree, or its bandit observations would scatter across a
+    # different synthetic "cluster" on every run.
+    first = _resolve_cluster_id(_UNCLUSTERED_ADDRESS, cluster_of={})
+    second = _resolve_cluster_id(_UNCLUSTERED_ADDRESS, cluster_of={})
+    assert first == second
+
+
+def test_unclustered_wallet_id_matches_a_real_singleton_clusters_scheme():
+    # A wallet_clusters singleton (tracked, but Louvain gave it no edges)
+    # gets cluster_id_for([address]) too (see app/optimization/clustering.py's
+    # assign_clusters) - an unclustered contributor should be indistinguishable
+    # from that case, not a different id shape.
+    from app.optimization.clustering import cluster_id_for
+
+    assert _resolve_cluster_id(_UNCLUSTERED_ADDRESS, cluster_of={}) == cluster_id_for(
+        [_UNCLUSTERED_ADDRESS]
+    )
+
+
+def test_clustered_wallet_uses_its_real_cluster_id_not_the_fallback():
+    cluster_of = {_UNCLUSTERED_ADDRESS: "real-cluster-hash"}
+    assert _resolve_cluster_id(_UNCLUSTERED_ADDRESS, cluster_of) == "real-cluster-hash"

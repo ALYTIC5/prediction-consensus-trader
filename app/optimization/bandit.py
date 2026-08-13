@@ -35,6 +35,7 @@ from app.config.effective import get_effective_settings
 from app.config.settings import Settings
 from app.db.models import ClusterBanditState, Signal, SignalCLV
 from app.db.session import db_session
+from app.optimization.clustering import cluster_id_for
 from app.optimization.clv import address_to_cluster_map
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,27 @@ def effective_weighted_score(
     return sum(max_weight_by_cluster.values(), Decimal(0))
 
 
+def _resolve_cluster_id(address: str, cluster_of: dict[str, str]) -> str:
+    """The cluster id to use for one signal contributor when writing to
+    cluster_bandit_state - its real cluster if wallet_clusters has one, or
+    a deterministic, bounded synthetic id if it doesn't (never tracked, or
+    tracked but not yet clustered).
+
+    Never falls back to the raw address the way app/consensus/engine.py's
+    in-memory-only _weighted_score() and this module's own
+    effective_weighted_score() do - those two never persist their fallback
+    key anywhere, so an address-length key costs nothing there. This
+    function's result is written straight into cluster_bandit_state.
+    cluster_id, a bounded column, so the fallback has to be bounded too:
+    cluster_id_for([address]) - the exact same content-hash scheme a real
+    Louvain singleton already gets, applied to a "cluster" of one. Using
+    the raw (42-char) address here instead is what overflowed the column
+    and took the whole bandit job down on every run, silently, until
+    /healthz's dead_jobs check caught it.
+    """
+    return cluster_of.get(address) or cluster_id_for([address])
+
+
 def load_cluster_observations(session: Session) -> dict[str, list[bool]]:
     """Every (cluster, positive-CLV?) observation from every signal whose
     clv_horizon is known - a signal co-signed by multiple independent
@@ -141,7 +163,7 @@ def load_cluster_observations(session: Session) -> dict[str, list[bool]]:
 
     observations: dict[str, list[bool]] = {}
     for contributors, clv in rows:
-        clusters_seen = {cluster_of.get(c["address"], c["address"]) for c in contributors}
+        clusters_seen = {_resolve_cluster_id(c["address"], cluster_of) for c in contributors}
         positive = clv > 0
         for cluster_id in clusters_seen:
             observations.setdefault(cluster_id, []).append(positive)

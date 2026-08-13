@@ -61,13 +61,25 @@ class ClusteringSummary:
     largest_cluster_size: int
 
 
-def _cluster_id_for(member_addresses: list[str]) -> str:
+def cluster_id_for(member_addresses: list[str]) -> str:
     """A stable, content-derived id - sha256 of the sorted member addresses,
     truncated to 16 hex chars (docs/PHASE6_DESIGN.md flag 1). Two runs that
     produce an identical cluster get the identical id; a cluster whose
     membership actually changes gets a new one - correct, since a changed
     membership is a genuinely different independent-voice profile and
     shouldn't inherit an unrelated reward history (Workstream 5).
+
+    Public (unlike most of this module's helpers): app/optimization/bandit.py
+    also calls this directly, for a contributor wallet that isn't in
+    wallet_clusters at all (never tracked, or tracked but not yet clustered).
+    That wallet is its own singleton "cluster" by the exact same definition a
+    real Louvain singleton already gets - cluster_id_for([address]) - so it
+    always produces a bounded, deterministic id in the same 16-hex-char shape
+    every other cluster_id has, never the wallet's raw (and much longer)
+    address itself. Using the raw address there is what overflowed
+    cluster_bandit_state.cluster_id's VARCHAR column and took the whole
+    Workstream 5 bandit job down on every run - see bandit.py's
+    _resolve_cluster_id().
     """
     joined = ",".join(sorted(address.lower() for address in member_addresses))
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
@@ -97,7 +109,7 @@ def assign_clusters(
     assignments: list[ClusterAssignment] = []
     for community in communities:
         member_addresses = [wallet_addresses[wallet_id] for wallet_id in community]
-        cluster_id = _cluster_id_for(member_addresses)
+        cluster_id = cluster_id_for(member_addresses)
         cluster_size = len(community)
         for wallet_id in community:
             assignments.append(
