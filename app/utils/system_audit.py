@@ -69,7 +69,15 @@ from app.db.models import (
     WalletCrowdedness,
 )
 from app.db.session import db_session
-from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
+from app.paper.fills import (
+    BookLevel,
+    FillConfig,
+    FillMethod,
+    FillRequest,
+    MarketSnapshot,
+    compute_fill,
+    walk_the_book,
+)
 from app.risk.rules import (
     PortfolioState,
     ProposedTrade,
@@ -410,65 +418,168 @@ def check_consensus_data(settings: Settings) -> list[CheckResult]:
 # --- PAPER TRADING -----------------------------------------------------------
 
 
-def check_paper_code() -> CheckResult:
-    """compute_fill() smoke test - fills at ask + slippage, never at mid or
-    better than ask. The one line that determines whether every paper P&L
-    number in this project is honest.
+def _fill_config() -> FillConfig:
+    return FillConfig(
+        entry_delay_seconds=30,
+        slippage_k=Decimal("0.5"),
+        slippage_max=Decimal("0.15"),
+        no_delayed_snapshot_penalty=Decimal("0.05"),
+        max_entry_price_drift=Decimal("0.15"),
+        max_book_depth_fraction=Decimal("0.20"),
+    )
+
+
+def check_paper_code() -> list[CheckResult]:
+    """compute_fill() smoke tests across both fill paths:
+      - no book available: falls back to ask + slippage, never mid or
+        better than ask (the original guarantee).
+      - a book is available: walks it for the real size-weighted price,
+        tagged FillMethod.BOOK_WALK, and an order too large for the book
+        (beyond the depth cap) is honestly rejected as NO_LIQUIDITY rather
+        than silently estimated.
+    This is the model that determines whether every paper P&L number in
+    this project is honest.
     """
     section = "PAPER"
+    config = _fill_config()
+    ask, bid, mid = Decimal("0.60"), Decimal("0.50"), Decimal("0.55")
+    current = MarketSnapshot(
+        captured_at=_SMOKE_NOW, ask=ask, bid=bid, liquidity=Decimal("1000000000"), price=mid
+    )
+    delayed = MarketSnapshot(
+        captured_at=_SMOKE_NOW + timedelta(seconds=30),
+        ask=ask,
+        bid=bid,
+        liquidity=None,
+        price=mid,
+    )
+    now = _SMOKE_NOW + timedelta(seconds=30)
+    results: list[CheckResult] = []
+
+    # --- no book: estimated fallback, unchanged guarantee ---
     try:
-        config = FillConfig(
-            entry_delay_seconds=30,
-            slippage_k=Decimal("0.5"),
-            slippage_max=Decimal("0.15"),
-            no_delayed_snapshot_penalty=Decimal("0.05"),
-            max_entry_price_drift=Decimal("0.15"),
-        )
-        ask, bid, mid = Decimal("0.60"), Decimal("0.50"), Decimal("0.55")
-        current = MarketSnapshot(
-            captured_at=_SMOKE_NOW, ask=ask, bid=bid, liquidity=Decimal("1000000000"), price=mid
-        )
-        delayed = MarketSnapshot(
-            captured_at=_SMOKE_NOW + timedelta(seconds=30),
-            ask=ask,
-            bid=bid,
-            liquidity=None,
-            price=mid,
-        )
         request = FillRequest(
             signal_price=ask, order_notional=Decimal("10"), detected_at=_SMOKE_NOW
         )
-        result = compute_fill(
-            request, [current, delayed], config, now=_SMOKE_NOW + timedelta(seconds=30)
-        )
-
+        result = compute_fill(request, [current, delayed], config, now=now)
         if not result.filled or result.fill_price is None:
-            return CheckResult(
-                section, "compute_fill()", "FAIL", f"expected a fill, got reason={result.reason}"
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() estimated",
+                    "FAIL",
+                    f"expected a fill, got reason={result.reason}",
+                )
             )
-        if result.fill_price < ask:
-            return CheckResult(
-                section,
-                "compute_fill()",
-                "FAIL",
-                f"fill_price {result.fill_price} is below ask {ask}",
+        elif result.fill_price < ask or result.fill_price <= mid:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() estimated",
+                    "FAIL",
+                    f"fill_price {result.fill_price} not ask-based (ask={ask} mid={mid})",
+                )
             )
-        if result.fill_price <= mid:
-            return CheckResult(
-                section,
-                "compute_fill()",
-                "FAIL",
-                f"fill_price {result.fill_price} did not exceed mid {mid} - "
-                f"looks mid-based, not ask-based",
+        elif result.fill_method != FillMethod.ESTIMATED:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() estimated",
+                    "FAIL",
+                    f"expected fill_method=ESTIMATED with no book, got {result.fill_method}",
+                )
             )
-        return CheckResult(
-            section,
-            "compute_fill()",
-            "PASS",
-            f"fill_price={result.fill_price} derived from ask={ask} (+slippage), never mid={mid}",
-        )
+        else:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() estimated",
+                    "PASS",
+                    f"fill_price={result.fill_price} ask-based (+slippage), never mid={mid}, "
+                    f"fill_method={result.fill_method}",
+                )
+            )
     except Exception as exc:
-        return CheckResult(section, "compute_fill()", "FAIL", f"raised {exc!r}")
+        results.append(CheckResult(section, "compute_fill() estimated", "FAIL", f"raised {exc!r}"))
+
+    # --- book available: real size-weighted walk ---
+    try:
+        # Thin top level so a $9 order genuinely spills into the second one
+        # (proves multi-level walking, not just a single-level lookup), and
+        # a deep enough total book that $9 still clears the 20% depth cap.
+        book = [
+            BookLevel(price=Decimal("0.60"), size=Decimal("5")),
+            BookLevel(price=Decimal("0.61"), size=Decimal("1000")),
+        ]
+        # Compares against walk_the_book()'s own output directly rather than
+        # a hand-expanded number, so this proves compute_fill() actually
+        # delegates to it (not just returns *a* price) without duplicating
+        # its arithmetic here.
+        request = FillRequest(signal_price=ask, order_notional=Decimal("9"), detected_at=_SMOKE_NOW)
+        result = compute_fill(request, [current, delayed], config, now=now, book=book)
+        expected = walk_the_book(book, Decimal("9"), config.max_book_depth_fraction)
+        if not result.filled or result.fill_method != FillMethod.BOOK_WALK:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() book-walk",
+                    "FAIL",
+                    f"expected a BOOK_WALK fill, got filled={result.filled} "
+                    f"method={result.fill_method}",
+                )
+            )
+        elif result.fill_price != expected:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() book-walk",
+                    "FAIL",
+                    f"fill_price {result.fill_price} != walk_the_book() {expected}",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() book-walk",
+                    "PASS",
+                    f"fill_price={result.fill_price} matches walk_the_book() exactly, "
+                    f"fill_method={result.fill_method}",
+                )
+            )
+    except Exception as exc:
+        results.append(CheckResult(section, "compute_fill() book-walk", "FAIL", f"raised {exc!r}"))
+
+    # --- book too thin: honest rejection, never a silent estimate ---
+    try:
+        thin_book = [BookLevel(price=Decimal("0.60"), size=Decimal("1"))]
+        request = FillRequest(
+            signal_price=ask, order_notional=Decimal("1000"), detected_at=_SMOKE_NOW
+        )
+        result = compute_fill(request, [current, delayed], config, now=now, book=thin_book)
+        if result.filled or result.reason.value != "NO_LIQUIDITY":
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() thin book",
+                    "FAIL",
+                    f"expected NO_LIQUIDITY rejection, got filled={result.filled} "
+                    f"reason={result.reason}",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    section,
+                    "compute_fill() thin book",
+                    "PASS",
+                    "an order too large for the visible book is rejected, not silently estimated",
+                )
+            )
+    except Exception as exc:
+        results.append(CheckResult(section, "compute_fill() thin book", "FAIL", f"raised {exc!r}"))
+
+    return results
 
 
 def check_paper_data() -> list[CheckResult]:
@@ -912,7 +1023,7 @@ def run_checks(settings: Settings) -> list[CheckResult]:
     out.extend(check_collectors_data(settings))
     out.append(check_consensus_code())
     out.extend(check_consensus_data(settings))
-    out.append(check_paper_code())
+    out.extend(check_paper_code())
     out.extend(check_paper_data())
     out.append(check_risk_code())
     out.extend(check_risk_data())

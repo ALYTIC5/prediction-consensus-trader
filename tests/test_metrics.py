@@ -7,7 +7,12 @@ implementation itself, matching the style of test_fills.py.
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.paper.metrics import TradeData, compute_portfolio_metrics
+from app.paper.metrics import (
+    CredibilityTradeRecord,
+    TradeData,
+    compute_credibility_gap,
+    compute_portfolio_metrics,
+)
 
 NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 STARTING = Decimal("10000")
@@ -282,3 +287,96 @@ def test_zero_starting_bankroll_roi_none() -> None:
     )
 
     assert result.roi_pct is None
+
+
+# --- compute_credibility_gap(): book-walk P&L vs naive mid-price P&L ---
+
+
+def test_credibility_gap_hand_computed() -> None:
+    """One trade: bought at a real (book-walked) entry_price of 0.60,
+    sold at 0.80, size 100 -> notional=60, realized_pnl=(0.80-0.60)*100=20.
+    Naive mid-price model: same $60 notional at mid=0.55 instead ->
+    60/0.55 shares, pnl = 60*(0.80/0.55 - 1).
+    """
+    record = CredibilityTradeRecord(
+        entry_price=Decimal("0.60"),
+        exit_price=Decimal("0.80"),
+        size=Decimal("100"),
+        realized_pnl=Decimal("20"),
+        mid_price_at_entry=Decimal("0.55"),
+    )
+
+    result = compute_credibility_gap([record])
+
+    notional = Decimal("60")
+    expected_mid_pnl = notional * (Decimal("0.80") / Decimal("0.55") - 1)
+    assert result.n == 1
+    assert result.book_walk_pnl == Decimal("20")
+    assert result.mid_price_pnl == expected_mid_pnl
+    assert result.gap == expected_mid_pnl - Decimal("20")
+    # Buying cheaper than mid (real ask/book price 0.60 < ... wait mid 0.55 is
+    # BELOW the real entry - a naive mid model would have bought cheaper and
+    # so reported MORE profit: the gap should be positive here.
+    assert result.gap > 0
+
+
+def test_credibility_gap_trades_without_mid_price_excluded() -> None:
+    """A trade with no trustworthy mid_price_at_entry contributes to
+    neither sum - never partially counted.
+    """
+    with_mid = CredibilityTradeRecord(
+        entry_price=Decimal("0.60"),
+        exit_price=Decimal("0.80"),
+        size=Decimal("100"),
+        realized_pnl=Decimal("20"),
+        mid_price_at_entry=Decimal("0.55"),
+    )
+    without_mid = CredibilityTradeRecord(
+        entry_price=Decimal("0.40"),
+        exit_price=Decimal("0.90"),
+        size=Decimal("50"),
+        realized_pnl=Decimal("25"),
+        mid_price_at_entry=None,
+    )
+
+    result = compute_credibility_gap([with_mid, without_mid])
+
+    assert result.n == 1
+    assert result.book_walk_pnl == Decimal("20")  # only the with_mid trade
+
+
+def test_credibility_gap_empty_input_is_neutral() -> None:
+    result = compute_credibility_gap([])
+
+    assert result.n == 0
+    assert result.book_walk_pnl == Decimal("0")
+    assert result.mid_price_pnl == Decimal("0")
+    assert result.gap == Decimal("0")
+
+
+def test_credibility_gap_sums_across_multiple_trades() -> None:
+    records = [
+        CredibilityTradeRecord(
+            entry_price=Decimal("0.50"),
+            exit_price=Decimal("0.60"),
+            size=Decimal("100"),
+            realized_pnl=Decimal("10"),
+            mid_price_at_entry=Decimal("0.50"),
+        ),
+        CredibilityTradeRecord(
+            entry_price=Decimal("0.60"),
+            exit_price=Decimal("0.50"),
+            size=Decimal("100"),
+            realized_pnl=Decimal("-10"),
+            mid_price_at_entry=Decimal("0.60"),
+        ),
+    ]
+
+    result = compute_credibility_gap(records)
+
+    assert result.n == 2
+    assert result.book_walk_pnl == Decimal("0")  # +10 and -10 cancel
+    # Both trades' entry_price equals their own mid_price_at_entry here, so
+    # the naive model reproduces the exact same real P&L on each.
+    assert result.mid_price_pnl == Decimal("0")
+    assert result.gap == Decimal("0")

@@ -1,9 +1,11 @@
-"""Typed client for the three Polymarket endpoints the collectors need."""
+"""Typed client for the Polymarket endpoints the collectors need."""
 
 from collections.abc import Sequence
 
+import httpx
+
 from app.collectors.http import PolymarketHTTP
-from app.collectors.schemas import GammaMarket, LeaderboardEntry, PositionEntry
+from app.collectors.schemas import GammaMarket, LeaderboardEntry, OrderBookResponse, PositionEntry
 from app.config.settings import get_settings
 
 _VALID_TIME_PERIODS = {"DAY", "WEEK", "MONTH", "ALL"}
@@ -82,6 +84,22 @@ class PolymarketClient:
                 break
             offset += self._POSITIONS_PAGE_SIZE
         return results
+
+    async def get_book(self, token_id: str) -> OrderBookResponse | None:
+        """Fetch one outcome token's order book. None means no orderbook
+        exists for this token (404 - an illiquid/inactive market, per
+        docs/API_REFERENCE.md) - an expected, non-retryable outcome, never
+        raised as an error.
+        """
+        try:
+            data = await self._http.get_json(
+                f"{self._settings.clob_api_base}/book", params={"token_id": token_id}
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return OrderBookResponse.model_validate(data)
 
     async def get_markets_by_condition_ids(self, condition_ids: Sequence[str]) -> list[GammaMarket]:
         """Fetch markets by condition ID, 20 per request, as repeated query params."""

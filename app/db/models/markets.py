@@ -94,3 +94,34 @@ class PriceSnapshot(Base):
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class OrderBook(Base):
+    """One side of one outcome token's order book at one point in time -
+    see app/collectors/orderbook.py and docs/API_REFERENCE.md's /book entry.
+
+    One row per (asset, side, captured_at), not one row per level - levels
+    is the full bid or ask ladder as JSONB (a list of {"price": "...",
+    "size": "..."} objects, same string-decimal shape the API sends,
+    parsed to Decimal only when app/paper/fills.py's walk_the_book() reads
+    them), append-only. Only snapshotted for markets we hold a position in
+    or have an active signal on (app/collectors/orderbook.py's work list) -
+    this is not a general-purpose price feed, it exists so a paper fill can
+    walk a real book instead of assuming one.
+    """
+
+    __tablename__ = "order_books"
+    __table_args__ = (
+        Index(
+            "ix_order_books_condition_id_asset_captured_at", "condition_id", "asset", "captured_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    condition_id: Mapped[str] = mapped_column(String(66))
+    asset: Mapped[str] = mapped_column(String(80))
+    side: Mapped[str] = mapped_column(String(4))  # "bid" | "ask"
+    levels: Mapped[list[dict]] = mapped_column(JSONB)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

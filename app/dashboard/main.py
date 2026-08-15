@@ -714,6 +714,7 @@ def paper_detail_page(request: Request, portfolio_id: int):
     funnel = queries.portfolio_signal_funnel(portfolio_id)
     today_pnl = queries.today_return(portfolio_id)
     trade_stats = queries.trade_statistics(portfolio_id)
+    credibility = queries.get_credibility_gap(portfolio_id)
 
     equity_labels = [p.exit_at.strftime("%b %d %H:%M") for p in equity_curve]
     equity_data = [float(p.equity) for p in equity_curve]
@@ -745,6 +746,7 @@ def paper_detail_page(request: Request, portfolio_id: int):
         "funnel": funnel,
         "today_pnl": today_pnl,
         "trade_stats": trade_stats,
+        "credibility": credibility,
         "paper_min_trades_for_stats": settings.paper_min_trades_for_stats,
     }
     return templates.TemplateResponse(request, "paper_detail.html", context)

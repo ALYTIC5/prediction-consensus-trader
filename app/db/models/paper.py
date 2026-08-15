@@ -78,6 +78,14 @@ class PaperTrade(Base):
     signal_price: Mapped[Decimal] = mapped_column(Money)
     slippage_paid: Mapped[Decimal | None] = mapped_column(Money)
     entry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # BOOK_WALK when a real order_books snapshot was available at fill time
+    # (app/paper/fills.py's walk_the_book), ESTIMATED when it fell back to
+    # ask+slippage because no snapshot existed - null for MISSED/OPEN rows
+    # that never reached a fill decision. Never inferred after the fact:
+    # written once, at the moment compute_fill() (or its book-walk caller)
+    # actually decides, so "was this fill real or estimated" is always
+    # answerable from the row itself.
+    fill_method: Mapped[str | None] = mapped_column(String(10))
 
     current_price: Mapped[Decimal | None] = mapped_column(Money)
     unrealized_pnl: Mapped[Decimal | None] = mapped_column(Money)

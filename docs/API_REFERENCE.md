@@ -159,6 +159,47 @@ Confirmed live (previously, 2026-07-27): returns `{"data": [...]}`, an array
 of market objects (`active`, `closed`, `question`, `tokens`, etc.).
 Cursor-based pagination via `next_cursor`.
 
+## CLOB API — `GET https://clob.polymarket.com/book`
+
+Verified against docs.polymarket.com/api-reference/market-data/get-order-book
+(2026-08-14).
+
+Query params: `token_id` (string, required) — one outcome token's CLOB
+token ID (`markets.clob_token_ids[i]`, same ids the `prices` table's
+`asset` column already stores).
+
+Response:
+
+```json
+{
+  "market": "string",
+  "asset_id": "string",
+  "timestamp": "string",
+  "hash": "string",
+  "bids": [{"price": "string", "size": "string"}],
+  "asks": [{"price": "string", "size": "string"}],
+  "min_order_size": "string",
+  "tick_size": "string",
+  "neg_risk": true,
+  "last_trade_price": "string"
+}
+```
+
+`price`/`size` on every level are strings, not numbers — parse to Decimal,
+never float. Bids sorted price **descending** (best bid first), asks sorted
+price **ascending** (best ask first) — a level-walk for a BUY order consumes
+`asks` from the front.
+
+No rate limit documented on this endpoint's own page. A known upstream
+quirk (Polymarket/py-clob-client#180): `/book` has been reported to return
+stale, degenerate levels (e.g. 0.99/0.01) for some markets while other
+endpoints (`last_trade_price`) stay accurate — not something we can fix on
+our end, but a reason to treat an empty or one-sided book as `NO_LIQUIDITY`
+rather than trusting it blindly.
+
+404 means no orderbook exists for that token_id (illiquid/inactive market) -
+expected, not an error to retry.
+
 ---
 
-Verified on 2026-07-27.
+Verified on 2026-08-14.

@@ -21,6 +21,7 @@ DEFAULT_FILL_CONFIG = FillConfig(
     slippage_max=Decimal("0.15"),
     no_delayed_snapshot_penalty=Decimal("0.05"),
     max_entry_price_drift=Decimal("0.15"),
+    max_book_depth_fraction=Decimal("0.20"),
 )
 
 BASELINE_EXITS = ExitConfig(

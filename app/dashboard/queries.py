@@ -63,7 +63,14 @@ from app.optimization.clv import (
 )
 from app.optimization.crowdedness import hidden_alpha_score
 from app.paper.engine import resolve_calibration_config, resolve_risk_config
-from app.paper.metrics import PortfolioMetrics, TradeData, compute_portfolio_metrics
+from app.paper.metrics import (
+    CredibilityGap,
+    CredibilityTradeRecord,
+    PortfolioMetrics,
+    TradeData,
+    compute_credibility_gap,
+    compute_portfolio_metrics,
+)
 from app.risk.calibration import compute_bucket_stats, load_resolved_trade_records
 from app.risk.rules import RiskRule
 from app.utils.system_audit import CheckResult, run_checks
@@ -1116,6 +1123,77 @@ def portfolio_metrics_from_db(
         current_bankroll=portfolio.current_bankroll,
         min_trades_for_stats=get_settings().paper_min_trades_for_stats,
     )
+
+
+def get_credibility_gap(portfolio_id: int) -> CredibilityGap:
+    """The honesty check (app/paper/metrics.py's compute_credibility_gap):
+    for this portfolio's closed trades, what we actually made (book-walk
+    P&L where a real book was available, otherwise the estimated model)
+    against what a naive mid-price fill model would have reported on the
+    identical trades.
+
+    mid_price_at_entry is resolved from market_history - the most recent
+    row for that condition_id at or before the trade's entry_at (never a
+    later one - a fill decision can't be justified with data from its own
+    future). Done in Python, not a correlated SQL subquery: a portfolio's
+    closed-trade count and the market_history rows for its handful of
+    condition_ids are both small, and this stays readable.
+    """
+    with db_session() as session:
+        trades = session.execute(
+            select(
+                PaperTrade.condition_id,
+                PaperTrade.entry_price,
+                PaperTrade.exit_price,
+                PaperTrade.size,
+                PaperTrade.realized_pnl,
+                PaperTrade.entry_at,
+            ).where(
+                PaperTrade.portfolio_id == portfolio_id,
+                PaperTrade.status == "CLOSED",
+            )
+        ).all()
+        if not trades:
+            return compute_credibility_gap([])
+
+        condition_ids = {t.condition_id for t in trades}
+        history_rows = session.execute(
+            select(
+                MarketHistory.condition_id,
+                MarketHistory.best_bid,
+                MarketHistory.best_ask,
+                MarketHistory.captured_at,
+            )
+            .where(MarketHistory.condition_id.in_(condition_ids))
+            .order_by(MarketHistory.condition_id, MarketHistory.captured_at)
+        ).all()
+
+    history_by_condition: dict[str, list] = defaultdict(list)
+    for row in history_rows:
+        history_by_condition[row.condition_id].append(row)
+
+    def _mid_at_or_before(condition_id: str, entry_at: datetime) -> Decimal | None:
+        candidates = [
+            row
+            for row in history_by_condition.get(condition_id, [])
+            if row.captured_at <= entry_at and row.best_bid is not None and row.best_ask is not None
+        ]
+        if not candidates:
+            return None
+        nearest = max(candidates, key=lambda row: row.captured_at)
+        return (nearest.best_bid + nearest.best_ask) / 2
+
+    records = [
+        CredibilityTradeRecord(
+            entry_price=t.entry_price,
+            exit_price=t.exit_price,
+            size=t.size,
+            realized_pnl=t.realized_pnl,
+            mid_price_at_entry=_mid_at_or_before(t.condition_id, t.entry_at),
+        )
+        for t in trades
+    ]
+    return compute_credibility_gap(records)
 
 
 def list_portfolio_trades(portfolio_id: int, status_filter: str = "all") -> list[PaperTradeRow]:

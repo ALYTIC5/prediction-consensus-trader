@@ -7,6 +7,7 @@ import signal
 
 from app.collectors.leaderboard import collect as collect_leaderboard
 from app.collectors.markets import collect as collect_markets
+from app.collectors.orderbook import collect as collect_orderbook
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
@@ -59,6 +60,11 @@ async def _run() -> None:
                 name="markets",
                 run=lambda: collect_markets(client, settings),
                 interval_seconds=settings.markets_interval_seconds,
+            ),
+            PeriodicJob(
+                name="orderbook",
+                run=lambda: collect_orderbook(client, settings),
+                interval_seconds=settings.orderbook_interval_seconds,
             ),
             PeriodicJob(
                 name="consensus",

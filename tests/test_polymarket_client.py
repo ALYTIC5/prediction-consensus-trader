@@ -163,3 +163,53 @@ async def test_markets_chunking_and_json_string_parsing() -> None:
     assert market.parsed_outcome_prices == [Decimal("0.4"), Decimal("0.6")]
     assert all(isinstance(price, Decimal) for price in market.parsed_outcome_prices)
     assert market.parsed_clob_token_ids == ["111", "222"]
+
+
+@pytest.mark.asyncio
+async def test_get_book_parses_bids_and_asks() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["token_id"] == "999"
+        body = {
+            "market": "0xcond",
+            "asset_id": "999",
+            "timestamp": "1700000000",
+            "hash": "abc",
+            "bids": [{"price": "0.59", "size": "100"}, {"price": "0.58", "size": "50"}],
+            "asks": [{"price": "0.60", "size": "80"}, {"price": "0.61", "size": "200"}],
+            "min_order_size": "5",
+            "tick_size": "0.01",
+            "neg_risk": False,
+            "last_trade_price": "0.595",
+        }
+        return httpx.Response(200, json=body)
+
+    client, http_client = _client_for(handler)
+    try:
+        book = await client.get_book("999")
+    finally:
+        await http_client.aclose()
+
+    assert book is not None
+    assert book.asset_id == "999"
+    assert book.bids[0].price == Decimal("0.59")
+    assert book.bids[0].size == Decimal("100")
+    assert book.asks[0].price == Decimal("0.60")
+    assert isinstance(book.asks[0].price, Decimal)
+
+
+@pytest.mark.asyncio
+async def test_get_book_returns_none_on_404() -> None:
+    """No orderbook for this token (illiquid/inactive market) - an
+    expected, non-retryable outcome, never raised as an error.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "no orderbook"})
+
+    client, http_client = _client_for(handler)
+    try:
+        book = await client.get_book("nonexistent")
+    finally:
+        await http_client.aclose()
+
+    assert book is None

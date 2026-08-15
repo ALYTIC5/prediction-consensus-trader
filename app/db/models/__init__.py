@@ -2,7 +2,7 @@
 # Base.metadata) actually discovers it — a model defined but never imported
 # is invisible to migrations.
 from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
-from app.db.models.markets import Market, MarketHistory, PriceSnapshot
+from app.db.models.markets import Market, MarketHistory, OrderBook, PriceSnapshot
 from app.db.models.optimization import (
     ClusterBanditState,
     SignalCLV,
@@ -33,6 +33,7 @@ __all__ = [
     "LeaderboardSnapshot",
     "Market",
     "MarketHistory",
+    "OrderBook",
     "OverrideAudit",
     "PaperPortfolio",
     "PaperTrade",

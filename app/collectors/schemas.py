@@ -172,3 +172,32 @@ class GammaMarket(PolymarketResponseModel):
             return parsed if isinstance(parsed, list) else []
         except (json.JSONDecodeError, TypeError):
             return []
+
+
+class OrderBookLevel(PolymarketResponseModel):
+    """One price level from GET /book (CLOB API) - see docs/API_REFERENCE.md.
+
+    price/size arrive as strings on the wire, never floats - Decimal here,
+    same as every other money-shaped field in this project.
+    """
+
+    price: Decimal
+    size: Decimal
+
+
+class OrderBookResponse(PolymarketResponseModel):
+    """GET /book's full response - verified against docs.polymarket.com
+    2026-08-14 (see docs/API_REFERENCE.md). bids sorted price descending
+    (best bid first), asks sorted price ascending (best ask first) - the
+    API's own documented order, never re-sorted here so a caller walking
+    the list front-to-back is walking price-priority order by construction.
+    """
+
+    market: str
+    asset_id: str
+    bids: list[OrderBookLevel] = Field(default_factory=list)
+    asks: list[OrderBookLevel] = Field(default_factory=list)
+    min_order_size: Decimal | None = None
+    tick_size: Decimal | None = None
+    neg_risk: bool | None = None
+    last_trade_price: Decimal | None = None

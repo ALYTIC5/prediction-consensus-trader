@@ -82,6 +82,7 @@ class Settings(BaseSettings):
 
     gamma_api_base: str = "https://gamma-api.polymarket.com"
     data_api_base: str = "https://data-api.polymarket.com"
+    clob_api_base: str = "https://clob.polymarket.com"
 
     http_timeout_seconds: float = 15.0
     http_max_concurrency: int = 6
@@ -103,6 +104,16 @@ class Settings(BaseSettings):
     leaderboard_interval_seconds: int = 3600
     positions_interval_seconds: int = 120
     markets_interval_seconds: int = 600
+
+    # --- Order book snapshots (app/collectors/orderbook.py) ---
+    # A brand-new API surface (docs/API_REFERENCE.md's /book entry, verified
+    # 2026-08-14) with no documented rate limit - conservative on purpose
+    # until it's been watched in production: a slower interval than the
+    # markets collector, and a hard cap on how many tokens get snapshotted
+    # per cycle (only markets we actually hold or have an active signal in
+    # ever need one, so this should rarely bind).
+    orderbook_interval_seconds: int = 300
+    orderbook_max_tokens_per_cycle: int = 200
 
     # --- Retention pruning (app/utils/pruning.py, scripts/prune_old_data.py) ---
     # Append-only time-series tables with no natural cap - prices alone
@@ -257,6 +268,12 @@ class Settings(BaseSettings):
     paper_no_delayed_snapshot_penalty: Decimal = Decimal("0.05")
     paper_max_entry_price_drift: Decimal = Decimal("0.15")
     paper_resolution_price_threshold: Decimal = Decimal("0.02")
+    # Book-walk fill model (app/paper/fills.py's walk_the_book) - the
+    # fraction of a book side's total visible depth a single order may
+    # consume. Beyond this the order itself would move the market enough
+    # that the visible levels no longer describe what it would actually
+    # pay - better to reject as unfillable than fantasize a price.
+    paper_max_book_depth_fraction: Decimal = Decimal("0.20")
 
     # Sizing (app/paper/sizing.py) - see design section 3.
     paper_sizing_rule: str = "FIXED_FRACTION"
@@ -485,6 +502,7 @@ class Settings(BaseSettings):
             "paper_stop_loss_pct",
             "paper_scalp_take_profit",
             "paper_scalp_breakeven_tolerance",
+            "paper_max_book_depth_fraction",
             "risk_max_position_pct",
             "risk_max_exposure_pct",
             "risk_max_market_exposure_pct",

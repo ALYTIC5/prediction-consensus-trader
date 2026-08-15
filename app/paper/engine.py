@@ -24,6 +24,7 @@ from app.config.effective import get_effective_settings
 from app.config.settings import Settings
 from app.db.models import (
     Market,
+    OrderBook,
     PaperPortfolio,
     PaperTrade,
     PaperTradeStatus,
@@ -37,7 +38,7 @@ from app.optimization.bandit import effective_weighted_score, load_multipliers
 from app.optimization.clv import address_to_cluster_map
 from app.optimization.crowdedness import crowdedness_by_address, hidden_alpha_weighted_score
 from app.paper.exits_scalp import ScalpExitConfig, ScalpExitReason, check_scalp_exit
-from app.paper.fills import FillConfig, FillRequest, MarketSnapshot, compute_fill
+from app.paper.fills import BookLevel, FillConfig, FillRequest, MarketSnapshot, compute_fill
 from app.paper.resolution import ResolutionOutcome, detect_resolution
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
 from app.risk.calibration import (
@@ -399,6 +400,9 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
         max_entry_price_drift=g(
             params, "paper_max_entry_price_drift", settings.paper_max_entry_price_drift
         ),
+        max_book_depth_fraction=g(
+            params, "paper_max_book_depth_fraction", settings.paper_max_book_depth_fraction
+        ),
     )
     use_scalp_exit = g(params, "paper_use_scalp_exit", settings.paper_use_scalp_exit)
     exits = ExitConfig(
@@ -508,6 +512,31 @@ def _load_snapshots(
             )
         )
     return snapshots
+
+
+def _load_book(session: Session, condition_id: str, asset: str) -> list[BookLevel] | None:
+    """The latest ask-side order_books snapshot for this token, parsed to
+    BookLevel - None means no snapshot has ever been collected for it
+    (app/collectors/orderbook.py only snapshots markets with an open trade
+    or active signal, so a brand-new signal's very first cycle can
+    legitimately have none yet), which is exactly compute_fill()'s signal
+    to fall back to the estimated model. We only ever buy, so only the ask
+    side is ever relevant here - the bid side exists in order_books for the
+    credibility metric (app/paper/metrics.py), not for fills.
+    """
+    row = session.execute(
+        select(OrderBook)
+        .where(
+            OrderBook.condition_id == condition_id,
+            OrderBook.asset == asset,
+            OrderBook.side == "ask",
+        )
+        .order_by(OrderBook.captured_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None or not row.levels:
+        return None
+    return [BookLevel(price=Decimal(lvl["price"]), size=Decimal(lvl["size"])) for lvl in row.levels]
 
 
 def _day_start(now: datetime) -> datetime:
@@ -877,6 +906,7 @@ def _run_entries(
             )
 
         snapshots = _load_snapshots(session, market, signal, config.fill)
+        book = _load_book(session, signal.condition_id, signal.asset)
         fill_result = compute_fill(
             FillRequest(
                 signal_price=signal.average_entry_price,
@@ -886,6 +916,7 @@ def _run_entries(
             snapshots,
             config.fill,
             now,
+            book=book,
         )
 
         if not fill_result.filled:
@@ -922,6 +953,7 @@ def _run_entries(
                 entry_price=fill_result.fill_price,
                 size=size,
                 slippage_paid=fill_result.slippage_paid,
+                fill_method=fill_result.fill_method,
                 sizer_used=sizer_used,
                 kelly_fraction=kelly_fraction_value,
                 p_hat=p_hat_value,

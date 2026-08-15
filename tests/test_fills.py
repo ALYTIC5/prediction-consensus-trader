@@ -11,7 +11,16 @@ end-to-end smoke check.
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.paper.fills import FillConfig, FillReason, FillRequest, MarketSnapshot, compute_fill
+from app.paper.fills import (
+    BookLevel,
+    FillConfig,
+    FillMethod,
+    FillReason,
+    FillRequest,
+    MarketSnapshot,
+    compute_fill,
+    walk_the_book,
+)
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -21,6 +30,7 @@ DEFAULT_CONFIG = FillConfig(
     slippage_max=Decimal("0.15"),
     no_delayed_snapshot_penalty=Decimal("0.05"),
     max_entry_price_drift=Decimal("0.15"),
+    max_book_depth_fraction=Decimal("0.20"),
 )
 
 
@@ -294,3 +304,206 @@ def test_drift_one_tick_beyond_limit_misses() -> None:
 
     assert result.filled is False
     assert result.reason == FillReason.MISSED_DRIFT
+
+
+# --- walk_the_book(): the order-book-walking VWAP model ---
+
+
+def test_walk_the_book_single_level_matches_hand_computation() -> None:
+    """Order fits entirely within the top level - avg price is just that
+    level's price, no averaging needed.
+    """
+    book = [BookLevel(price=Decimal("0.60"), size=Decimal("100"))]
+
+    avg = walk_the_book(book, size_usd=Decimal("30"), max_depth_fraction=Decimal("1.0"))
+
+    assert avg == Decimal("0.60")
+
+
+def test_walk_the_book_spans_two_levels_matches_hand_computation() -> None:
+    """$9 against a $6 top level (10 shares @ 0.60) then spilling into a
+    second level (0.61) - hand-computed size-weighted average.
+    """
+    book = [
+        BookLevel(price=Decimal("0.60"), size=Decimal("10")),  # $6.00 of depth
+        BookLevel(price=Decimal("0.61"), size=Decimal("100")),  # plenty more
+    ]
+    size_usd = Decimal("9")
+
+    avg = walk_the_book(book, size_usd, max_depth_fraction=Decimal("1.0"))
+
+    # Level 1: all 10 shares for $6.00. Remaining $3.00 buys 3/0.61 shares
+    # of level 2. Hand-computed size-weighted average:
+    remaining_shares = Decimal("3") / Decimal("0.61")
+    expected_shares = Decimal("10") + remaining_shares
+    expected_avg = Decimal("9") / expected_shares
+    assert avg == expected_avg
+    # Sanity: between the two level prices, closer to the thin top level's
+    # price than a naive 50/50 average would suggest.
+    assert Decimal("0.60") < avg < Decimal("0.61")
+
+
+def test_walk_the_book_order_larger_than_book_returns_none() -> None:
+    """The book's total depth genuinely can't fill the order - NO_LIQUIDITY,
+    not a partial-fill fiction.
+    """
+    book = [BookLevel(price=Decimal("0.60"), size=Decimal("10"))]  # $6.00 total
+
+    avg = walk_the_book(book, size_usd=Decimal("100"), max_depth_fraction=Decimal("1.0"))
+
+    assert avg is None
+
+
+def test_walk_the_book_empty_book_returns_none() -> None:
+    assert walk_the_book([], size_usd=Decimal("10"), max_depth_fraction=Decimal("1.0")) is None
+
+
+def test_walk_the_book_depth_cap_limits_order_size() -> None:
+    """Plenty of raw depth to fill the order, but it exceeds
+    max_depth_fraction of that depth - rejected anyway, because consuming
+    that much of the visible book would move the market past what the
+    levels can honestly describe.
+    """
+    book = [BookLevel(price=Decimal("0.60"), size=Decimal("1000"))]  # $600 of depth
+    size_usd = Decimal("500")  # comfortably fillable in raw terms...
+
+    capped = walk_the_book(
+        book, size_usd, max_depth_fraction=Decimal("0.20")
+    )  # ...but > 20% of $600
+    uncapped = walk_the_book(book, size_usd, max_depth_fraction=Decimal("1.0"))
+
+    assert capped is None
+    assert uncapped == Decimal("0.60")
+
+
+def test_walk_the_book_exactly_at_depth_cap_fills() -> None:
+    """The boundary itself: exactly max_depth_fraction of visible depth
+    still fills - "beyond" is what's rejected, not "at."
+    """
+    book = [BookLevel(price=Decimal("0.50"), size=Decimal("100"))]  # $50 of depth
+    size_usd = Decimal("10")  # exactly 20% of $50
+
+    avg = walk_the_book(book, size_usd, max_depth_fraction=Decimal("0.20"))
+
+    assert avg == Decimal("0.50")
+
+
+def test_walk_the_book_zero_or_negative_size_returns_none() -> None:
+    book = [BookLevel(price=Decimal("0.50"), size=Decimal("100"))]
+    assert walk_the_book(book, Decimal("0"), Decimal("1.0")) is None
+    assert walk_the_book(book, Decimal("-5"), Decimal("1.0")) is None
+
+
+# --- compute_fill() with a real book: BOOK_WALK path ---
+
+
+def test_compute_fill_uses_book_walk_price_when_book_available() -> None:
+    """A book is passed and can fill the order - fill_price comes from
+    walk_the_book(), not the ask+slippage-constant model, and fill_method
+    records that it was a real book walk.
+    """
+    ask = Decimal("0.60")
+    current = _snapshot(NOW, ask=ask, liquidity=Decimal("1000000"))
+    book = [
+        BookLevel(price=Decimal("0.60"), size=Decimal("10")),
+        BookLevel(price=Decimal("0.61"), size=Decimal("100")),
+    ]
+    order_notional = Decimal("9")
+
+    result = compute_fill(
+        _request(signal_price=ask, order_notional=order_notional),
+        [current],
+        DEFAULT_CONFIG,
+        now=NOW,
+        book=book,
+    )
+
+    expected = walk_the_book(book, order_notional, DEFAULT_CONFIG.max_book_depth_fraction)
+    assert result.filled is True
+    assert result.fill_method == FillMethod.BOOK_WALK
+    assert result.fill_price == expected
+    # Real slippage_paid is the walked price above the reference, not the
+    # flat/size-scaled constant the estimated model would have produced.
+    assert result.slippage_paid == expected - ask
+
+
+def test_compute_fill_book_too_thin_rejects_not_estimates() -> None:
+    """A book IS available but can't honestly fill the order (exceeds
+    depth or genuinely too thin) - rejected as NO_LIQUIDITY. Must NOT
+    silently fall back to the estimated model - that would be exactly the
+    dishonesty this feature exists to remove.
+    """
+    ask = Decimal("0.60")
+    current = _snapshot(NOW, ask=ask, liquidity=Decimal("1000000"))
+    thin_book = [BookLevel(price=Decimal("0.60"), size=Decimal("1"))]  # $0.60 of depth
+
+    result = compute_fill(
+        _request(signal_price=ask, order_notional=Decimal("1000")),
+        [current],
+        DEFAULT_CONFIG,
+        now=NOW,
+        book=thin_book,
+    )
+
+    assert result.filled is False
+    assert result.fill_price is None
+    assert result.reason == FillReason.NO_LIQUIDITY
+    assert result.fill_method is None
+
+
+def test_compute_fill_drift_rejection_unaffected_by_book() -> None:
+    """Drift rejection still happens before any book is even considered -
+    a book can't rescue a fill whose reference price already moved too far.
+    """
+    signal_price = Decimal("0.50")
+    drifted_ask = Decimal("0.70")  # 40% move, config allows only 15%
+    current = _snapshot(NOW, ask=drifted_ask, liquidity=Decimal("10000"))
+    book = [BookLevel(price=drifted_ask, size=Decimal("1000"))]
+
+    result = compute_fill(
+        _request(signal_price=signal_price, order_notional=Decimal("100")),
+        [current],
+        DEFAULT_CONFIG,
+        now=NOW,
+        book=book,
+    )
+
+    assert result.filled is False
+    assert result.reason == FillReason.MISSED_DRIFT
+
+
+# --- fallback path (no book at all): fill_method tagging ---
+
+
+def test_fallback_path_sets_fill_method_estimated() -> None:
+    """No book snapshot exists for this market at fill time (book=None,
+    the default) - falls back to the old ask+slippage model, tagged
+    FillMethod.ESTIMATED so it's always distinguishable from a real fill.
+    """
+    ask = Decimal("0.50")
+    current = _snapshot(NOW, ask=ask, liquidity=Decimal("10000"))
+    delayed = _snapshot(NOW + timedelta(seconds=30), ask=ask)
+
+    result = compute_fill(
+        _request(signal_price=ask, order_notional=Decimal("100")),
+        [current, delayed],
+        DEFAULT_CONFIG,
+        now=NOW + timedelta(seconds=30),
+    )
+
+    assert result.filled is True
+    assert result.fill_method == FillMethod.ESTIMATED
+
+
+def test_missed_and_no_liquidity_results_carry_no_fill_method() -> None:
+    """A trade that never actually filled has no fill_method, real or
+    estimated - there's nothing to label.
+    """
+    current = _snapshot(NOW, ask=Decimal("0.50"), liquidity=Decimal("0"))
+
+    result = compute_fill(
+        _request(order_notional=Decimal("100")), [current], DEFAULT_CONFIG, now=NOW
+    )
+
+    assert result.filled is False
+    assert result.fill_method is None

@@ -54,6 +54,39 @@
 <p class="text-dim micro-label" style="margin-bottom:var(--space-4);">{{ metrics.insufficient_sample_note }} — ratio-shaped statistics suppressed.</p>
 {% endif %}
 
+<div class="panel">
+  <div class="panel__title">
+    <span>Fill Credibility</span>
+    <span class="text-dim" style="font-weight:400; font-size:12px;">book-walk vs. naive mid-price, same trades</span>
+  </div>
+  {% if credibility.n > 0 %}
+  <p class="text-dim" style="margin-bottom:var(--space-3);">
+    Across {{ credibility.n }} closed trade{% if credibility.n != 1 %}s{% endif %} with a known market mid at entry: what we
+    actually made (book-walk fills where a real order book was available, estimated ask+slippage otherwise) versus what a
+    naive mid-price fill model would have reported on the identical trades.
+  </p>
+  <div class="summary-strip">
+    <div class="summary-card">
+      <span class="micro-label">Book-walk P&amp;L</span>
+      <span class="summary-card__value {% if credibility.book_walk_pnl > 0 %}text-phosphor{% elif credibility.book_walk_pnl < 0 %}text-alert{% endif %}">{{ "%.2f"|format(credibility.book_walk_pnl) }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">Mid-price P&amp;L (naive)</span>
+      <span class="summary-card__value text-dim">{{ "%.2f"|format(credibility.mid_price_pnl) }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">Gap (mid − real)</span>
+      <span class="summary-card__value {% if credibility.gap > 0 %}text-alert{% elif credibility.gap < 0 %}text-phosphor{% endif %}">{{ "%.2f"|format(credibility.gap) }}</span>
+    </div>
+  </div>
+  {% if credibility.gap > 0 %}
+  <p class="text-alert micro-label" style="margin-top:var(--space-2);">A naive mid-price model would have overstated this portfolio's P&amp;L by {{ "%.2f"|format(credibility.gap) }} across these trades.</p>
+  {% endif %}
+  {% else %}
+  <p class="empty-state">No closed trades yet with a known market mid at entry - nothing to compare.</p>
+  {% endif %}
+</div>
+
 {% set p = portfolio.params %}
 <div class="panel">
   <div class="panel__title"><span>Strategy Profile</span></div>

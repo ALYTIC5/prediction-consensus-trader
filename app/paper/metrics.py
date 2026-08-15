@@ -256,3 +256,67 @@ def compute_portfolio_metrics(
         open_count=open_count,
         insufficient_sample_note=insufficient_note,
     )
+
+
+@dataclass(frozen=True)
+class CredibilityTradeRecord:
+    """One closed trade's real fill plus the market's mid price nearest its
+    entry time - the two things needed to compare what we actually got
+    (book-walk-capable, see app/paper/fills.py) against what a naive
+    mid-price fill model would have produced on the identical trade.
+    mid_price_at_entry is None when no market_history row exists near
+    enough to entry_at to trust - that trade is excluded from the
+    comparison rather than guessed (same "don't report what can't be
+    computed honestly" rule this whole module follows).
+    """
+
+    entry_price: Decimal
+    exit_price: Decimal
+    size: Decimal
+    realized_pnl: Decimal
+    mid_price_at_entry: Decimal | None
+
+
+@dataclass(frozen=True)
+class CredibilityGap:
+    """The honesty check itself - see docs on compute_credibility_gap().
+
+    gap = mid_price_pnl - book_walk_pnl: positive means a naive mid-price
+    model would have reported MORE profit than what actually happened -
+    i.e. past/naive results were overstated by that many dollars across
+    these n trades. Negative means mid-price would have looked worse -
+    still worth seeing, not just the case anyone would expect.
+    """
+
+    n: int
+    book_walk_pnl: Decimal
+    mid_price_pnl: Decimal
+    gap: Decimal
+
+
+def compute_credibility_gap(records: list[CredibilityTradeRecord]) -> CredibilityGap:
+    """Same notional (size*entry_price) deployed both ways, so the two P&L
+    figures are a fair apples-to-apples comparison and not an artifact of
+    sizing differently at a different price: book_walk_pnl is what actually
+    happened (the trade's own realized_pnl); mid_price_pnl is that same
+    dollar amount re-priced at entry as if it had bought
+    notional/mid_price_at_entry shares instead of notional/entry_price.
+    Trades with no trustworthy mid_price_at_entry are skipped entirely,
+    from both sums - never partially counted.
+    """
+    book_walk_pnl = Decimal(0)
+    mid_price_pnl = Decimal(0)
+    n = 0
+    for r in records:
+        if r.mid_price_at_entry is None or r.mid_price_at_entry <= 0:
+            continue
+        notional = r.size * r.entry_price
+        book_walk_pnl += r.realized_pnl
+        mid_price_pnl += notional * (r.exit_price / r.mid_price_at_entry - 1)
+        n += 1
+    return CredibilityGap(
+        n=n,
+        book_walk_pnl=book_walk_pnl,
+        mid_price_pnl=mid_price_pnl,
+        gap=mid_price_pnl - book_walk_pnl,
+    )
