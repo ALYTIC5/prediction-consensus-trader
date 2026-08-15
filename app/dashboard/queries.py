@@ -1132,17 +1132,29 @@ def get_credibility_gap(portfolio_id: int) -> CredibilityGap:
     against what a naive mid-price fill model would have reported on the
     identical trades.
 
-    mid_price_at_entry is resolved from market_history - the most recent
-    row for that condition_id at or before the trade's entry_at (never a
-    later one - a fill decision can't be justified with data from its own
-    future). Done in Python, not a correlated SQL subquery: a portfolio's
-    closed-trade count and the market_history rows for its handful of
-    condition_ids are both small, and this stays readable.
+    mid_price_at_entry is resolved from `prices` (PriceSnapshot), NOT
+    market_history: market_history.best_bid/best_ask is one pair per
+    condition_id, not per outcome token, and a binary market's two tokens
+    can trade at wildly different prices - matching a trade against the
+    wrong side's bid/ask produced nonsense (a $2 trade "gap" of hundreds
+    of dollars) before this was caught. `prices` is keyed by (condition_id,
+    asset) like the trade itself, so it's always the same token. It's
+    Polymarket's own quoted per-token price, not a literal (bid+ask)/2 -
+    the honest label for what we can actually reconstruct, given there's
+    no historized per-asset bid/ask series in this schema (same limitation
+    app/paper/fills.py's MarketSnapshot docstring already notes).
+
+    Nearest at-or-before entry_at, never a later snapshot - a fill decision
+    can't be justified with data from its own future. Done in Python, not
+    a correlated SQL subquery: a portfolio's closed-trade count and the
+    price rows for its handful of (condition_id, asset) pairs are both
+    small, and this stays readable.
     """
     with db_session() as session:
         trades = session.execute(
             select(
                 PaperTrade.condition_id,
+                PaperTrade.asset,
                 PaperTrade.entry_price,
                 PaperTrade.exit_price,
                 PaperTrade.size,
@@ -1156,32 +1168,32 @@ def get_credibility_gap(portfolio_id: int) -> CredibilityGap:
         if not trades:
             return compute_credibility_gap([])
 
-        condition_ids = {t.condition_id for t in trades}
-        history_rows = session.execute(
+        pairs = {(t.condition_id, t.asset) for t in trades}
+        condition_ids = {p[0] for p in pairs}
+        price_rows = session.execute(
             select(
-                MarketHistory.condition_id,
-                MarketHistory.best_bid,
-                MarketHistory.best_ask,
-                MarketHistory.captured_at,
+                PriceSnapshot.condition_id,
+                PriceSnapshot.asset,
+                PriceSnapshot.price,
+                PriceSnapshot.captured_at,
             )
-            .where(MarketHistory.condition_id.in_(condition_ids))
-            .order_by(MarketHistory.condition_id, MarketHistory.captured_at)
+            .where(PriceSnapshot.condition_id.in_(condition_ids))
+            .order_by(PriceSnapshot.condition_id, PriceSnapshot.asset, PriceSnapshot.captured_at)
         ).all()
 
-    history_by_condition: dict[str, list] = defaultdict(list)
-    for row in history_rows:
-        history_by_condition[row.condition_id].append(row)
+    prices_by_pair: dict[tuple[str, str], list] = defaultdict(list)
+    for row in price_rows:
+        prices_by_pair[(row.condition_id, row.asset)].append(row)
 
-    def _mid_at_or_before(condition_id: str, entry_at: datetime) -> Decimal | None:
+    def _price_at_or_before(condition_id: str, asset: str, entry_at: datetime) -> Decimal | None:
         candidates = [
             row
-            for row in history_by_condition.get(condition_id, [])
-            if row.captured_at <= entry_at and row.best_bid is not None and row.best_ask is not None
+            for row in prices_by_pair.get((condition_id, asset), [])
+            if row.captured_at <= entry_at
         ]
         if not candidates:
             return None
-        nearest = max(candidates, key=lambda row: row.captured_at)
-        return (nearest.best_bid + nearest.best_ask) / 2
+        return max(candidates, key=lambda row: row.captured_at).price
 
     records = [
         CredibilityTradeRecord(
@@ -1189,7 +1201,7 @@ def get_credibility_gap(portfolio_id: int) -> CredibilityGap:
             exit_price=t.exit_price,
             size=t.size,
             realized_pnl=t.realized_pnl,
-            mid_price_at_entry=_mid_at_or_before(t.condition_id, t.entry_at),
+            mid_price_at_entry=_price_at_or_before(t.condition_id, t.asset, t.entry_at),
         )
         for t in trades
     ]

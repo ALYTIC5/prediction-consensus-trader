@@ -61,9 +61,10 @@
   </div>
   {% if credibility.n > 0 %}
   <p class="text-dim" style="margin-bottom:var(--space-3);">
-    Across {{ credibility.n }} closed trade{% if credibility.n != 1 %}s{% endif %} with a known market mid at entry: what we
-    actually made (book-walk fills where a real order book was available, estimated ask+slippage otherwise) versus what a
-    naive mid-price fill model would have reported on the identical trades.
+    Across {{ credibility.n }} closed trade{% if credibility.n != 1 %}s{% endif %} with a known quoted price at entry: what
+    we actually made (book-walk fills where a real order book was available, estimated ask+slippage otherwise) versus what
+    a naive model filling at Polymarket's quoted price for that exact outcome token would have reported on the identical
+    trades.
   </p>
   <div class="summary-strip">
     <div class="summary-card">
