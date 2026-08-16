@@ -125,3 +125,28 @@ class OrderBook(Base):
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class FeeRate(Base):
+    """Latest known taker fee rate for one outcome token - see
+    app/collectors/fee_rates.py and docs/API_REFERENCE.md's /fee-rate
+    entry.
+
+    One row per (condition_id, asset), UPSERTed each cycle - unlike
+    OrderBook this is not append-only history: only the current rate is
+    ever needed to compute a fee, so there's nothing to gain from keeping
+    old values around, same reasoning as Market's own single-row-per-
+    condition_id shape.
+    """
+
+    __tablename__ = "fee_rates"
+
+    condition_id: Mapped[str] = mapped_column(String(66), primary_key=True)
+    asset: Mapped[str] = mapped_column(String(80), primary_key=True)
+    # base_fee basis points / 10000 - already a fraction (e.g. 0.07), never
+    # stored as raw bps, so every reader uses the same unit as
+    # app/paper/fees.py's compute_taker_fee expects.
+    rate: Mapped[Decimal] = mapped_column(Money)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

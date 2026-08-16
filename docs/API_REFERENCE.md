@@ -191,6 +191,44 @@ condition_ids-filtered `/markets` has silently dropped from its response
 response, never liquidity/volume/category, which this endpoint doesn't
 carry the way Gamma's does.
 
+## CLOB API — `GET https://clob.polymarket.com/fee-rate`
+
+Verified against docs.polymarket.com/trading/fees and
+docs.polymarket.com/api-reference/market-data/get-fee-rate (2026-08-16).
+
+Query params: `token_id` (string, optional) — one outcome token's CLOB
+token ID.
+
+Response: `{"base_fee": 30}` — basis points, integer. Divide by 10000 for
+the fraction used in the fee formula below. 400 on an invalid token_id, 404
+when no fee rate exists for the market.
+
+**Fee formula (docs/trading/fees):** `fee = C × feeRate × p × (1 - p)`,
+where `C` is shares traded and `p` is the execution price — charged **only
+on taker fills at trade execution** (both entries and any exit that's a
+real market sell: take-profit, stop-loss, signal-expiry, scalp). Makers pay
+0%. Symmetric, peaking at p=0.5, zero at the extremes.
+
+Documented category rates (`docs/trading/fees`, current as of the above
+verification date — this schedule has changed more than once since
+Polymarket introduced taker fees in January 2026, which is exactly why this
+project queries `/fee-rate` live per market rather than hardcoding this
+table): crypto 0.07, sports 0.05, economics/culture/weather/other 0.05,
+finance/politics/mentions/tech 0.04, geopolitics 0 (fee-free). Note this
+does **not** line up 1:1 with this project's own `normalize_category`
+buckets (`app/collectors/categories.py`) — e.g. our "Politics" bucket folds
+in geopolitics, which Polymarket's own schedule prices at 0% vs politics'
+4% — one more reason the live per-token endpoint is used instead of our
+category field.
+
+**Redemption is not a taker trade and pays no fee.** Confirmed via
+docs/concepts/resolution and docs/trading (redemption pages): resolving a
+market and redeeming winning tokens for $1 (or letting losing tokens expire
+worthless) goes through the CTF collateral adapter, not the CLOB order
+book — neither `docs/trading/fees` nor the resolution docs mention any fee
+on it. See app/paper/fees.py's docstring for how this maps onto our exit
+reasons.
+
 ## CLOB API — `GET https://clob.polymarket.com/book`
 
 Verified against docs.polymarket.com/api-reference/market-data/get-order-book

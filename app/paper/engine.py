@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.config.effective import get_effective_settings
 from app.config.settings import Settings
 from app.db.models import (
+    FeeRate,
     Market,
     OrderBook,
     PaperPortfolio,
@@ -38,6 +39,7 @@ from app.optimization.bandit import effective_weighted_score, load_multipliers
 from app.optimization.clv import address_to_cluster_map
 from app.optimization.crowdedness import crowdedness_by_address, hidden_alpha_weighted_score
 from app.paper.exits_scalp import ScalpExitConfig, ScalpExitReason, check_scalp_exit
+from app.paper.fees import compute_taker_fee
 from app.paper.fills import BookLevel, FillConfig, FillRequest, MarketSnapshot, compute_fill
 from app.paper.resolution import ResolutionOutcome, detect_resolution
 from app.paper.sizing import SizingConfig, SizingRequest, size_position
@@ -243,6 +245,10 @@ class PortfolioConfig:
     # hidden_alpha wins if both are somehow set.
     use_hidden_alpha_weighting: bool
     crowd_penalty_weight: Decimal
+    # Fallback taker fee rate (app/paper/fees.py) used only when no live
+    # app/collectors/fee_rates.py snapshot exists yet for a token - see
+    # settings.paper_fee_rate_default's docstring.
+    fee_rate_default: Decimal
 
 
 def resolve_kelly_sizing_config(params: dict, settings: Settings) -> KellySizingConfig:
@@ -445,6 +451,7 @@ def resolve_portfolio_config(params: dict, settings: Settings) -> PortfolioConfi
             params, "paper_use_hidden_alpha_weighting", settings.paper_use_hidden_alpha_weighting
         ),
         crowd_penalty_weight=g(params, "crowd_penalty_weight", settings.crowd_penalty_weight),
+        fee_rate_default=g(params, "paper_fee_rate_default", settings.paper_fee_rate_default),
     )
 
 
@@ -537,6 +544,19 @@ def _load_book(session: Session, condition_id: str, asset: str) -> list[BookLeve
     if row is None or not row.levels:
         return None
     return [BookLevel(price=Decimal(lvl["price"]), size=Decimal(lvl["size"])) for lvl in row.levels]
+
+
+def _load_fee_rate(session: Session, condition_id: str, asset: str) -> Decimal | None:
+    """The latest fee_rates snapshot for this token - None means no
+    snapshot has been collected yet (same "brand-new signal's first cycle"
+    reasoning as _load_book above), which is the caller's signal to fall
+    back to PortfolioConfig.fee_rate_default.
+    """
+    return session.execute(
+        select(FeeRate.rate)
+        .where(FeeRate.condition_id == condition_id, FeeRate.asset == asset)
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def _day_start(now: datetime) -> datetime:
@@ -940,6 +960,10 @@ def _run_entries(
             continue
 
         size = target_notional / fill_result.fill_price
+        entry_fee_rate = _load_fee_rate(session, signal.condition_id, signal.asset)
+        if entry_fee_rate is None:
+            entry_fee_rate = config.fee_rate_default
+        entry_fee = compute_taker_fee(fill_result.fill_price, size, entry_fee_rate)
         session.add(
             PaperTrade(
                 portfolio_id=portfolio.id,
@@ -954,6 +978,7 @@ def _run_entries(
                 size=size,
                 slippage_paid=fill_result.slippage_paid,
                 fill_method=fill_result.fill_method,
+                fee_paid=entry_fee,
                 sizer_used=sizer_used,
                 kelly_fraction=kelly_fraction_value,
                 p_hat=p_hat_value,
@@ -962,7 +987,7 @@ def _run_entries(
             )
         )
         cost = size * fill_result.fill_price
-        portfolio.current_bankroll -= cost
+        portfolio.current_bankroll -= cost + entry_fee
         exposure += cost
         open_positions.append(
             OpenPosition(
@@ -973,7 +998,7 @@ def _run_entries(
         lines.append(
             f"paper[{portfolio.name}]: entered signal {signal.id} {signal.asset} "
             f"size={size:.4f} price={fill_result.fill_price:.4f} "
-            f"slippage={fill_result.slippage_paid:.4f}"
+            f"slippage={fill_result.slippage_paid:.4f} fee={entry_fee:.4f}"
         )
 
     return lines
@@ -1098,16 +1123,28 @@ def _run_exits(
         else:
             exit_price = trade.entry_price
 
+        if exit_reason == ExitReason.MARKET_RESOLVED:
+            # Redemption via the CTF collateral adapter, not a CLOB trade -
+            # no taker fee applies, win or lose (see app/paper/fees.py's
+            # docstring).
+            exit_fee = Decimal(0)
+        else:
+            exit_fee_rate = _load_fee_rate(session, trade.condition_id, trade.asset)
+            if exit_fee_rate is None:
+                exit_fee_rate = config.fee_rate_default
+            exit_fee = compute_taker_fee(exit_price, trade.size, exit_fee_rate)
+
+        trade.fee_paid = (trade.fee_paid or Decimal(0)) + exit_fee
         trade.exit_price = exit_price
-        trade.realized_pnl = (exit_price - trade.entry_price) * trade.size
+        trade.realized_pnl = (exit_price - trade.entry_price) * trade.size - trade.fee_paid
         trade.exit_reason = exit_reason
         trade.exit_at = now
         trade.status = PaperTradeStatus.CLOSED
-        portfolio.current_bankroll += trade.size * exit_price
+        portfolio.current_bankroll += trade.size * exit_price - exit_fee
 
         lines.append(
             f"paper[{portfolio.name}]: exited trade {trade.id} reason={exit_reason} "
-            f"exit_price={exit_price:.4f} pnl={trade.realized_pnl:.4f}"
+            f"exit_price={exit_price:.4f} pnl={trade.realized_pnl:.4f} fee={exit_fee:.4f}"
         )
 
     return lines

@@ -219,3 +219,13 @@ class ClobMarketState(PolymarketResponseModel):
     active: bool
     closed: bool
     accepting_orders: bool = False
+
+
+class FeeRateResponse(PolymarketResponseModel):
+    """GET /fee-rate's response (CLOB API) - verified live 2026-08-16 (see
+    docs/API_REFERENCE.md). base_fee is basis points as an integer, e.g. 700
+    for crypto's documented 7% taker rate - divide by 10000 to get the
+    fraction app/paper/fees.py's compute_taker_fee expects.
+    """
+
+    base_fee: int

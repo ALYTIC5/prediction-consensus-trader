@@ -129,6 +129,21 @@ class Settings(BaseSettings):
     orderbook_interval_seconds: int = 300
     orderbook_max_tokens_per_cycle: int = 200
 
+    # --- Fee rate snapshots (app/collectors/fee_rates.py) ---
+    # Same "brand-new API surface, conservative on purpose" reasoning as
+    # order books above - same work list (markets we hold or have an
+    # active signal in), same shape.
+    fee_rate_interval_seconds: int = 300
+    fee_rate_max_tokens_per_cycle: int = 200
+    # Fallback used by app/paper/engine.py when no live fee_rates snapshot
+    # exists yet for a token (e.g. its very first cycle, before the
+    # collector above has had a turn) - Polymarket's own documented
+    # "Other/General" category rate (docs/API_REFERENCE.md), the most
+    # representative default across the schedule's 0%-7% range. Never used
+    # silently forever: the next fee_rates cycle replaces it with the real
+    # per-market rate.
+    paper_fee_rate_default: Decimal = Decimal("0.05")
+
     # --- Retention pruning (app/utils/pruning.py, scripts/prune_old_data.py) ---
     # Append-only time-series tables with no natural cap - prices alone
     # grows ~230k rows/day (one row per outcome token per markets-collector
@@ -517,6 +532,7 @@ class Settings(BaseSettings):
             "paper_scalp_take_profit",
             "paper_scalp_breakeven_tolerance",
             "paper_max_book_depth_fraction",
+            "paper_fee_rate_default",
             "risk_max_position_pct",
             "risk_max_exposure_pct",
             "risk_max_market_exposure_pct",

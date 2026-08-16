@@ -256,3 +256,34 @@ async def test_get_market_state_returns_none_on_404() -> None:
         await http_client.aclose()
 
     assert state is None
+
+
+@pytest.mark.asyncio
+async def test_get_fee_rate_converts_basis_points_to_fraction() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["token_id"] == "999"
+        return httpx.Response(200, json={"base_fee": 700})
+
+    client, http_client = _client_for(handler)
+    try:
+        rate = await client.get_fee_rate("999")
+    finally:
+        await http_client.aclose()
+
+    assert rate == Decimal("0.07")
+
+
+@pytest.mark.asyncio
+async def test_get_fee_rate_returns_none_on_404() -> None:
+    """No fee rate for this market - expected, not an error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "fee rate not found"})
+
+    client, http_client = _client_for(handler)
+    try:
+        rate = await client.get_fee_rate("nonexistent")
+    finally:
+        await http_client.aclose()
+
+    assert rate is None

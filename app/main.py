@@ -5,6 +5,7 @@ import contextlib
 import logging
 import signal
 
+from app.collectors.fee_rates import collect as collect_fee_rates
 from app.collectors.leaderboard import collect as collect_leaderboard
 from app.collectors.markets import collect as collect_markets
 from app.collectors.orderbook import collect as collect_orderbook
@@ -65,6 +66,11 @@ async def _run() -> None:
                 name="orderbook",
                 run=lambda: collect_orderbook(client, settings),
                 interval_seconds=settings.orderbook_interval_seconds,
+            ),
+            PeriodicJob(
+                name="fee_rates",
+                run=lambda: collect_fee_rates(client, settings),
+                interval_seconds=settings.fee_rate_interval_seconds,
             ),
             PeriodicJob(
                 name="consensus",

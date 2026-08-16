@@ -1,12 +1,14 @@
 """Typed client for the Polymarket endpoints the collectors need."""
 
 from collections.abc import Sequence
+from decimal import Decimal
 
 import httpx
 
 from app.collectors.http import PolymarketHTTP
 from app.collectors.schemas import (
     ClobMarketState,
+    FeeRateResponse,
     GammaMarket,
     LeaderboardEntry,
     OrderBookResponse,
@@ -122,6 +124,21 @@ class PolymarketClient:
                 return None
             raise
         return ClobMarketState.model_validate(data)
+
+    async def get_fee_rate(self, token_id: str) -> Decimal | None:
+        """Fetch one outcome token's current taker fee rate, as a fraction
+        (base_fee basis points / 10000). None means CLOB has no fee rate
+        for this token (404) - never raised as an error.
+        """
+        try:
+            data = await self._http.get_json(
+                f"{self._settings.clob_api_base}/fee-rate", params={"token_id": token_id}
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return Decimal(FeeRateResponse.model_validate(data).base_fee) / Decimal(10000)
 
     async def get_markets_by_condition_ids(self, condition_ids: Sequence[str]) -> list[GammaMarket]:
         """Fetch markets by condition ID, 20 per request, as repeated query params."""

@@ -95,6 +95,16 @@ class PaperTrade(Base):
     exit_reason: Mapped[str | None] = mapped_column(String(64))
     exit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Cumulative Polymarket taker fee actually deducted from this trade:
+    # the entry-fill fee, plus an exit-fill fee for every exit EXCEPT
+    # market_resolved (redemption isn't a taker trade - see
+    # app/paper/fees.py's docstring), added on close. realized_pnl above is
+    # already NET of this. NULL means "predates fee modelling" (a trade
+    # closed before this column existed) - never backfilled with a guessed
+    # rate, so analysis can filter fee_paid IS NOT NULL to exclude those
+    # rows rather than trust a fabricated historical number.
+    fee_paid: Mapped[Decimal | None] = mapped_column(Money)
+
     # Categorises why a MISSED trade was rejected: ENTRY_FILTER, SIZING, or
     # FILL. NULL for OPEN/CLOSED trades. Populated alongside exit_reason
     # which carries the specific reason within that category.
