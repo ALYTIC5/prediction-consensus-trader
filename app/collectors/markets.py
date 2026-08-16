@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -20,8 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 async def collect(client: PolymarketClient, settings: Settings) -> None:
-    """Sync Gamma metadata for every market we're currently exposed to."""
-    condition_ids = await asyncio.to_thread(_get_work_list)
+    """Sync Gamma metadata for every market we're currently exposed to.
+
+    Gamma's condition_ids-filtered /markets silently drops a market from
+    its response once archived, rather than returning it with closed=true
+    (see docs/API_REFERENCE.md) - so any requested condition_id missing
+    from the response is resolved via a bounded CLOB fallback instead of
+    being left to sync forever as "not yet closed".
+    """
+    condition_ids = await asyncio.to_thread(
+        _get_work_list, settings.markets_max_condition_ids_per_cycle
+    )
     if not condition_ids:
         logger.info("markets: nothing to sync (no open positions or open markets)")
         return
@@ -30,22 +39,34 @@ async def collect(client: PolymarketClient, settings: Settings) -> None:
     captured_at = datetime.now(UTC)
     stored_count = await asyncio.to_thread(_persist, markets, captured_at)
 
+    missing_ids = sorted(set(condition_ids) - {m.condition_id for m in markets})
+    fallback_count = 0
+    if missing_ids:
+        fallback_count = await _sync_via_clob_fallback(
+            client, missing_ids[: settings.markets_clob_fallback_max_per_cycle], captured_at
+        )
+
     logger.info(
-        "markets: requested=%d returned=%d stored=%d",
+        "markets: requested=%d returned=%d stored=%d missing=%d fallback_resolved=%d",
         len(condition_ids),
         len(markets),
         stored_count,
+        len(missing_ids),
+        fallback_count,
     )
 
 
-def _get_work_list() -> list[str]:
-    """Every condition_id we still care about.
+def _get_work_list(max_condition_ids: int) -> list[str]:
+    """Every condition_id we still care about, bounded to max_condition_ids.
 
     Derived from the DB, not a config list: every market held in an open
-    Position (so we keep pricing what our tracked wallets are actually in),
-    unioned with every market we already know about that isn't closed yet
-    (so a market doesn't go stale between the last position in it closing
-    and us noticing it resolved).
+    Position (so we keep pricing what our tracked wallets are actually in;
+    never capped - these are what we're actually exposed to right now),
+    filled up to the cap with markets we already know about that aren't
+    closed yet, oldest-synced-first so a backlog rotates through instead of
+    starving markets past the front of the list (so a market doesn't go
+    stale between the last position in it closing and us noticing it
+    resolved).
     """
     with db_session() as session:
         open_position_ids = set(
@@ -53,12 +74,55 @@ def _get_work_list() -> list[str]:
                 select(Position.condition_id).distinct().where(Position.is_open.is_(True))
             ).scalars()
         )
+        remaining_budget = max(max_condition_ids - len(open_position_ids), 0)
         open_market_ids = set(
             session.execute(
-                select(Market.condition_id).distinct().where(Market.closed.is_(False))
+                select(Market.condition_id)
+                .distinct()
+                .where(Market.closed.is_(False), Market.condition_id.not_in(open_position_ids))
+                .order_by(Market.last_synced_at.asc().nulls_first())
+                .limit(remaining_budget)
             ).scalars()
         )
     return sorted(open_position_ids | open_market_ids)
+
+
+async def _sync_via_clob_fallback(
+    client: PolymarketClient, condition_ids: list[str], captured_at: datetime
+) -> int:
+    """Resolve condition_ids Gamma dropped by asking CLOB directly, and
+    update just the resolution-state columns for each one found - never
+    liquidity/volume/category, which CLOB doesn't carry the way Gamma does.
+    """
+    resolved: list[tuple[str, bool, bool, bool]] = []
+    for condition_id in condition_ids:
+        state = await client.get_market_state(condition_id)
+        if state is not None:
+            resolved.append((condition_id, state.active, state.closed, state.accepting_orders))
+    if resolved:
+        await asyncio.to_thread(_persist_clob_fallback, resolved, captured_at)
+    return len(resolved)
+
+
+def _persist_clob_fallback(
+    resolved: list[tuple[str, bool, bool, bool]], captured_at: datetime
+) -> None:
+    """Blocking DB work: update active/closed/accepting_orders only, for
+    markets already known to us (a market Gamma never told us about in the
+    first place has no row to update, so this never inserts).
+    """
+    with db_session() as session:
+        for condition_id, active, closed, accepting_orders in resolved:
+            session.execute(
+                update(Market)
+                .where(Market.condition_id == condition_id)
+                .values(
+                    active=active,
+                    closed=closed,
+                    accepting_orders=accepting_orders,
+                    last_synced_at=captured_at,
+                )
+            )
 
 
 def _persist(markets: list[GammaMarket], captured_at: datetime) -> int:

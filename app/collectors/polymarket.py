@@ -5,7 +5,13 @@ from collections.abc import Sequence
 import httpx
 
 from app.collectors.http import PolymarketHTTP
-from app.collectors.schemas import GammaMarket, LeaderboardEntry, OrderBookResponse, PositionEntry
+from app.collectors.schemas import (
+    ClobMarketState,
+    GammaMarket,
+    LeaderboardEntry,
+    OrderBookResponse,
+    PositionEntry,
+)
 from app.config.settings import get_settings
 
 _VALID_TIME_PERIODS = {"DAY", "WEEK", "MONTH", "ALL"}
@@ -100,6 +106,22 @@ class PolymarketClient:
                 return None
             raise
         return OrderBookResponse.model_validate(data)
+
+    async def get_market_state(self, condition_id: str) -> ClobMarketState | None:
+        """Fallback lookup for one market's resolution state via CLOB, for
+        when Gamma's condition_ids-filtered /markets has silently dropped
+        it (see ClobMarketState's docstring). None means CLOB doesn't know
+        this condition_id either (404) - never raised as an error.
+        """
+        try:
+            data = await self._http.get_json(
+                f"{self._settings.clob_api_base}/markets/{condition_id}"
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return ClobMarketState.model_validate(data)
 
     async def get_markets_by_condition_ids(self, condition_ids: Sequence[str]) -> list[GammaMarket]:
         """Fetch markets by condition ID, 20 per request, as repeated query params."""

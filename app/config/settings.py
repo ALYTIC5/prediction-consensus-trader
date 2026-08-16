@@ -104,6 +104,20 @@ class Settings(BaseSettings):
     leaderboard_interval_seconds: int = 3600
     positions_interval_seconds: int = 120
     markets_interval_seconds: int = 600
+    # Hard cap on condition_ids synced per markets-collector cycle. Without
+    # this, the "not yet closed" work list grows unboundedly (it only
+    # shrinks when a market's closed flag actually flips) and the job's own
+    # runtime grows past markets_interval_seconds, permanently wedging
+    # /healthz as degraded - the exact failure this cap exists to prevent.
+    # Open positions are never subject to this cap (see
+    # app/collectors/markets.py's _get_work_list); only the "not yet closed"
+    # pool is capped and rotated oldest-synced-first so every market
+    # eventually gets a turn.
+    markets_max_condition_ids_per_cycle: int = 4000
+    # Per-cycle cap on CLOB fallback lookups (see get_market_state) for
+    # condition_ids Gamma silently dropped from its response - a brand-new
+    # fallback path, conservative on purpose until watched in production.
+    markets_clob_fallback_max_per_cycle: int = 500
 
     # --- Order book snapshots (app/collectors/orderbook.py) ---
     # A brand-new API surface (docs/API_REFERENCE.md's /book entry, verified

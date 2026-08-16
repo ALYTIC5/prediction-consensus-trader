@@ -213,3 +213,46 @@ async def test_get_book_returns_none_on_404() -> None:
         await http_client.aclose()
 
     assert book is None
+
+
+@pytest.mark.asyncio
+async def test_get_market_state_parses_resolution_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/markets/0xcond"
+        body = {
+            "condition_id": "0xcond",
+            "question": "Some resolved market?",
+            "active": True,
+            "closed": True,
+            "accepting_orders": False,
+            "archived": False,
+        }
+        return httpx.Response(200, json=body)
+
+    client, http_client = _client_for(handler)
+    try:
+        state = await client.get_market_state("0xcond")
+    finally:
+        await http_client.aclose()
+
+    assert state is not None
+    assert state.condition_id == "0xcond"
+    assert state.active is True
+    assert state.closed is True
+    assert state.accepting_orders is False
+
+
+@pytest.mark.asyncio
+async def test_get_market_state_returns_none_on_404() -> None:
+    """CLOB doesn't know this condition_id either - expected, not an error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "market not found"})
+
+    client, http_client = _client_for(handler)
+    try:
+        state = await client.get_market_state("0xdoesnotexist")
+    finally:
+        await http_client.aclose()
+
+    assert state is None

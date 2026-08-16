@@ -123,6 +123,18 @@ documented parameters (e.g. `closed=false`) and filter the returned list
 client-side on the `active` field after parsing. Never send an undocumented
 query parameter — see CLAUDE.md working agreement.
 
+### Quirk — archived markets silently vanish from `condition_ids`-filtered responses
+
+Confirmed live (2026-08-13/16): a market that has fully resolved and been
+archived is not returned with `closed: true` when queried by
+`condition_ids=<its own condition_id>` — it is simply absent from the
+response array, as if the id didn't exist. Root-caused as the reason
+`app/collectors/markets.py`'s "not yet closed" work list only ever grows:
+a resolved market's `closed` flag in our DB never flips because Gamma stops
+telling us about it at all. `GET https://clob.polymarket.com/markets/{id}`
+(below) still reports `closed: true` correctly for the same market and is
+used as the fallback source of truth when this happens.
+
 ## Rate limits (api-reference/rate-limits)
 
 | Endpoint | Limit |
@@ -158,6 +170,26 @@ Verified against the current Data API OpenAPI spec (previously, 2026-07-27).
 Confirmed live (previously, 2026-07-27): returns `{"data": [...]}`, an array
 of market objects (`active`, `closed`, `question`, `tokens`, etc.).
 Cursor-based pagination via `next_cursor`.
+
+## CLOB API — `GET https://clob.polymarket.com/markets/{condition_id}`
+
+Verified live via curl (2026-08-16) — docs.polymarket.com's own reference
+pages for this path were fragmentary/inconsistent (a market-data page 404'd,
+`get-clob-market-info` turned out to describe a different, narrower endpoint
+at `/clob-markets/{condition_id}` returning only trading params like `gst`/
+`r`/`t`, and `get-market-by-id` turned out to be Gamma's `/markets/{id}` on
+Gamma's internal numeric id, not our condition_id). Falling back to direct
+verification: single market object, per-item shape identical to the bulk
+`GET /markets` endpoint above (`active`, `closed`, `accepting_orders`,
+`condition_id`, `question`, etc.). Unknown condition_id → `404`.
+
+This is our fallback source of resolution state for a market that Gamma's
+condition_ids-filtered `/markets` has silently dropped from its response
+(see the Gamma section above) — the markets collector
+(`app/collectors/markets.py`) uses it to update just `active`/`closed`/
+`accepting_orders` for any requested condition_id missing from Gamma's
+response, never liquidity/volume/category, which this endpoint doesn't
+carry the way Gamma's does.
 
 ## CLOB API — `GET https://clob.polymarket.com/book`
 

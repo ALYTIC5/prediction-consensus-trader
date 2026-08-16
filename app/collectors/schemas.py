@@ -201,3 +201,21 @@ class OrderBookResponse(PolymarketResponseModel):
     tick_size: Decimal | None = None
     neg_risk: bool | None = None
     last_trade_price: Decimal | None = None
+
+
+class ClobMarketState(PolymarketResponseModel):
+    """One row from GET /markets/{condition_id} (CLOB API) - verified live
+    2026-08-16 (see docs/API_REFERENCE.md). Fallback source for markets
+    Gamma's condition_ids-filtered /markets silently drops once archived:
+    CLOB keeps reporting active/closed/accepting_orders for a resolved
+    market long after Gamma stops returning it. Field names arrive in
+    snake_case already, unlike Gamma's camelCase - no aliases needed. Only
+    the resolution-state fields are modeled; CLOB doesn't carry
+    liquidity/volume/category the way Gamma does, so this is never used to
+    update those.
+    """
+
+    condition_id: str
+    active: bool
+    closed: bool
+    accepting_orders: bool = False
