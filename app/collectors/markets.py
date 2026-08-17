@@ -60,31 +60,57 @@ def _get_work_list(max_condition_ids: int) -> list[str]:
     """Every condition_id we still care about, bounded to max_condition_ids.
 
     Derived from the DB, not a config list: every market held in an open
-    Position (so we keep pricing what our tracked wallets are actually in;
-    never capped - these are what we're actually exposed to right now),
-    filled up to the cap with markets we already know about that aren't
-    closed yet, oldest-synced-first so a backlog rotates through instead of
-    starving markets past the front of the list (so a market doesn't go
-    stale between the last position in it closing and us noticing it
-    resolved).
+    Position whose underlying market isn't already known to be closed (so
+    we keep pricing what our tracked wallets are actually exposed to),
+    capped at max_condition_ids same as the market pool below - a wallet
+    not bothering to redeem a resolved position is real and common enough
+    that this set has been observed over 80,000 entries in production, so
+    it cannot be left uncapped either. Filled up to the remaining budget
+    with markets we already know about that aren't closed yet,
+    oldest-synced-first so that backlog rotates through instead of
+    starving markets past the front of the list.
+
+    Two bugs already caught here, both from earlier versions of this
+    function, worth keeping in mind for any future edit:
+    - The excluded-closed-markets filter is a subquery, never a Python list
+      passed to not_in() - open positions routinely exceed Postgres's
+      65535 bind-parameter limit, and a literal-list not_in() blew that
+      limit in production, crashing this query every cycle. A subquery
+      compiles to one NOT IN (SELECT ...) clause with zero added bind
+      params regardless of table size.
+    - Neither query below both DISTINCTs and ORDER BYs a column outside
+      the SELECT list - Postgres rejects that combination outright
+      ("ORDER BY expressions must appear in select list" - confirmed live
+      before deploy, not guessed). The market query drops DISTINCT
+      entirely (condition_id is already declared unique on that table, so
+      it was always redundant); the position query drops ORDER BY instead
+      (Position.condition_id is genuinely non-unique - two outcome tokens
+      per market - so DISTINCT stays, and rotation-fairness is sacrificed
+      there in favour of a query that actually runs).
     """
     with db_session() as session:
-        open_position_ids = set(
+        closed_condition_ids = select(Market.condition_id).where(Market.closed.is_(True))
+        open_position_ids = list(
             session.execute(
-                select(Position.condition_id).distinct().where(Position.is_open.is_(True))
+                select(Position.condition_id)
+                .distinct()
+                .where(
+                    Position.is_open.is_(True),
+                    Position.condition_id.not_in(closed_condition_ids),
+                )
+                .limit(max_condition_ids)
             ).scalars()
         )
         remaining_budget = max(max_condition_ids - len(open_position_ids), 0)
         open_market_ids = set(
             session.execute(
                 select(Market.condition_id)
-                .distinct()
                 .where(Market.closed.is_(False), Market.condition_id.not_in(open_position_ids))
                 .order_by(Market.last_synced_at.asc().nulls_first())
                 .limit(remaining_budget)
             ).scalars()
         )
-    return sorted(open_position_ids | open_market_ids)
+    return sorted(set(open_position_ids) | open_market_ids)
 
 
 async def _sync_via_clob_fallback(
