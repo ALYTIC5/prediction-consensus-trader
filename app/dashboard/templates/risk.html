@@ -112,7 +112,7 @@
           <th>Clusters</th>
           <th>Score</th>
           <th>Price</th>
-          <th class="num">n</th>
+          <th class="num">n (effective n)</th>
           <th class="num">Wins</th>
           <th class="num">p&#770;</th>
           <th class="num">Wilson 95% CI</th>
@@ -125,7 +125,7 @@
           <td>{{ b.cluster_band }}</td>
           <td>{{ b.score_band }}</td>
           <td>{{ b.price_band }}</td>
-          <td class="num">{{ b.n }}</td>
+          <td class="num">{{ b.n }} ({{ b.effective_n }})</td>
           <td class="num">{{ b.wins }}</td>
           <td class="num">{{ "%.3f"|format(b.p_hat|float) }}</td>
           <td class="num">[{{ "%.3f"|format(b.ci_low|float) }}, {{ "%.3f"|format(b.ci_high|float) }}]</td>

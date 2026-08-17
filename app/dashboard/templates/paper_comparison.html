@@ -32,7 +32,7 @@
           <th data-sort="number" class="sortable-th">Win Rate</th>
           <th data-sort="number" class="sortable-th">Profit Factor</th>
           <th data-sort="number" class="sortable-th">Max DD</th>
-          <th data-sort="number" class="sortable-th">Trades</th>
+          <th data-sort="number" class="sortable-th">Trades (eff. n)</th>
           <th data-sort="number" class="sortable-th">Open</th>
           <th data-sort="number" class="sortable-th">P&L</th>
           <th data-sort="number" class="sortable-th">Avg Return</th>
@@ -49,7 +49,7 @@
           <td class="num">{% if comp.win_rate is not none %}{{ "%.1f"|format(comp.win_rate * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td>
           <td class="num">{% if comp.profit_factor is not none %}{{ "%.2f"|format(comp.profit_factor) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
           <td class="num text-alert">{% if comp.max_drawdown_pct is not none %}{{ "%.2f"|format(comp.max_drawdown_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td>
-          <td class="num">{{ comp.closed_count }}</td>
+          <td class="num">{{ comp.closed_count }} <span class="text-dim">({{ comp.effective_closed_count }})</span></td>
           <td class="num">{{ comp.open_count }}</td>
           <td class="num {% if comp.total_realized_pnl is not none and comp.total_realized_pnl > 0 %}text-phosphor{% elif comp.total_realized_pnl is not none and comp.total_realized_pnl < 0 %}text-alert{% endif %}">
             {% if comp.total_realized_pnl is not none %}{{ "%.2f"|format(comp.total_realized_pnl) }}{% else %}<span class="text-dim">—</span>{% endif %}

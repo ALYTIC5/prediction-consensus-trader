@@ -202,12 +202,16 @@ def test_sparse_bucket_falls_back_to_tiered_sizing():
     # Only 2 resolved trades in this bucket - far below the 30-sample gate.
     records = [
         ResolvedTradeRecord(
+            condition_id="0xcond0",
+            event_cluster_id=None,
             cluster_count=3,
             weighted_score=Decimal("1.5"),
             average_entry_price=Decimal("0.5"),
             won=True,
         ),
         ResolvedTradeRecord(
+            condition_id="0xcond1",
+            event_cluster_id=None,
             cluster_count=3,
             weighted_score=Decimal("1.5"),
             average_entry_price=Decimal("0.5"),
@@ -250,12 +254,14 @@ def test_well_calibrated_bucket_uses_kelly_not_fallback():
     )
     records = [
         ResolvedTradeRecord(
+            condition_id=f"0xcond{i}",
+            event_cluster_id=None,
             cluster_count=3,
             weighted_score=Decimal("1.5"),
             average_entry_price=Decimal("0.5"),
             won=won,
         )
-        for won in (True, True, False)
+        for i, won in enumerate((True, True, False))
     ]
     bucket_stats = compute_bucket_stats(records, calibration_config)
     features = SignalFeatures(

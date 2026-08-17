@@ -37,6 +37,12 @@ class Market(Base):
     # 3's per-category wallet ranking) never have to special-case a null.
     category: Mapped[str] = mapped_column(String(32), server_default="Other")
     end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # "event:<event_slug>" or "catdate:<category>:<bucket>" or
+    # "solo:<condition_id>" - see app/optimization/event_clustering.py.
+    # Nullable: computed by a periodic job, not always fresh for a
+    # brand-new market. Sized for the "event:" prefix plus event_slug's
+    # own 300-char max.
+    event_cluster_id: Mapped[str | None] = mapped_column(String(320), index=True)
     active: Mapped[bool] = mapped_column(Boolean)
     closed: Mapped[bool] = mapped_column(Boolean, index=True)
     accepting_orders: Mapped[bool] = mapped_column(Boolean, default=False)

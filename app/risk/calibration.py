@@ -54,7 +54,8 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import PaperTrade, PaperTradeStatus, Signal
+from app.db.models import Market, PaperTrade, PaperTradeStatus, Signal
+from app.optimization.event_clustering import cluster_key_for, effective_sample_size
 
 # Mirrors app.paper.engine.ExitReason.MARKET_RESOLVED's value - not imported
 # directly to avoid a circular import (engine.py imports this module for
@@ -66,8 +67,15 @@ _MARKET_RESOLVED_EXIT_REASON = "market_resolved"
 class ResolvedTradeRecord:
     """One resolved paper trade's calibration-relevant features - plain
     values, not an ORM row, so compute_bucket_stats stays DB-free.
+    condition_id/event_cluster_id are the join key for effective sample
+    size (app/optimization/event_clustering.py) - correlated markets
+    within a bucket (e.g. several outcomes of one election, all in the
+    same cluster) shouldn't each count as an independent confirmation of
+    that bucket's hit rate.
     """
 
+    condition_id: str
+    event_cluster_id: str | None
     cluster_count: int
     weighted_score: Decimal
     average_entry_price: Decimal
@@ -102,7 +110,16 @@ class CalibrationConfig:
 
 @dataclass(frozen=True)
 class BucketStats:
+    """n is the raw resolved-trade count; effective_n is the number of
+    distinct EVENT clusters those trades actually span
+    (app/optimization/event_clustering.py) - the min_samples_per_bucket
+    gate in get_p_hat below fires on effective_n, since a bucket that
+    "has" 40 trades from one election is really one confirmation of that
+    bucket's hit rate, not 40.
+    """
+
     n: int
+    effective_n: int
     wins: int
     p_hat: Decimal
     ci_low: Decimal
@@ -113,6 +130,7 @@ class BucketStats:
 class CalibrationResult:
     p_hat: Decimal
     n: int
+    effective_n: int
     ci_low: Decimal
     ci_high: Decimal
 
@@ -184,22 +202,27 @@ def compute_bucket_stats(
     is no "below the lowest band" bucket for calibration the way Stage 2's
     sizer has a floor-or-skip choice; it's simply not bucketable.
     """
-    grouped: dict[BucketKey, list[bool]] = {}
+    grouped: dict[BucketKey, list[ResolvedTradeRecord]] = {}
     for record in records:
         key = bucket_key(
             record.cluster_count, record.weighted_score, record.average_entry_price, config
         )
         if key is None:
             continue
-        grouped.setdefault(key, []).append(record.won)
+        grouped.setdefault(key, []).append(record)
 
     stats: dict[BucketKey, BucketStats] = {}
-    for key, outcomes in grouped.items():
-        n = len(outcomes)
-        wins = sum(outcomes)
+    for key, bucket_records in grouped.items():
+        n = len(bucket_records)
+        wins = sum(r.won for r in bucket_records)
+        effective_n = effective_sample_size(
+            [cluster_key_for(r.condition_id, r.event_cluster_id) for r in bucket_records]
+        )
         p_hat = Decimal(wins) / Decimal(n)
         ci_low, ci_high = wilson_interval(wins, n, config.confidence_z)
-        stats[key] = BucketStats(n=n, wins=wins, p_hat=p_hat, ci_low=ci_low, ci_high=ci_high)
+        stats[key] = BucketStats(
+            n=n, effective_n=effective_n, wins=wins, p_hat=p_hat, ci_low=ci_low, ci_high=ci_high
+        )
     return stats
 
 
@@ -218,10 +241,14 @@ def get_p_hat(
     if key is None:
         return None
     stats = bucket_stats.get(key)
-    if stats is None or stats.n < config.min_samples_per_bucket:
+    if stats is None or stats.effective_n < config.min_samples_per_bucket:
         return None
     return CalibrationResult(
-        p_hat=stats.p_hat, n=stats.n, ci_low=stats.ci_low, ci_high=stats.ci_high
+        p_hat=stats.p_hat,
+        n=stats.n,
+        effective_n=stats.effective_n,
+        ci_low=stats.ci_low,
+        ci_high=stats.ci_high,
     )
 
 
@@ -237,12 +264,15 @@ def load_resolved_trade_records(
     window_start = now - timedelta(days=window_days)
     rows = session.execute(
         select(
+            PaperTrade.condition_id,
+            Market.event_cluster_id,
             Signal.distinct_traders,
             Signal.weighted_score,
             Signal.average_entry_price,
             PaperTrade.exit_price,
         )
         .join(Signal, PaperTrade.signal_id == Signal.id)
+        .outerjoin(Market, Market.condition_id == PaperTrade.condition_id)
         .where(
             PaperTrade.status == PaperTradeStatus.CLOSED,
             PaperTrade.exit_reason == _MARKET_RESOLVED_EXIT_REASON,
@@ -251,6 +281,8 @@ def load_resolved_trade_records(
     ).all()
     return [
         ResolvedTradeRecord(
+            condition_id=row.condition_id,
+            event_cluster_id=row.event_cluster_id,
             # Signal.distinct_traders IS the cluster count for any signal
             # created after the Phase 6 workstream 1 cutover - see the
             # module docstring for why older, pre-cutover rows need no

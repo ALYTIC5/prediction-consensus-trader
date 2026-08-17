@@ -33,7 +33,7 @@
         <tr><td class="micro-label">Profit Factor</td><td class="num">{% if metrics.profit_factor is not none %}{{ "%.2f"|format(metrics.profit_factor) }}{% else %}<span class="text-dim">{{ metrics.insufficient_sample_note or "no losses yet" }}</span>{% endif %}</td></tr>
         <tr><td class="micro-label">Max Drawdown</td><td class="num text-alert">{% if metrics.max_drawdown_pct is not none %}{{ "%.2f"|format(metrics.max_drawdown_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>
         <tr><td class="micro-label">Sharpe</td><td class="num">{% if metrics.sharpe is not none %}{{ "%.2f"|format(metrics.sharpe) }}{% else %}<span class="text-dim">{{ metrics.insufficient_sample_note or "—" }}</span>{% endif %}</td></tr>
-        <tr><td class="micro-label">Closed</td><td class="num">{{ metrics.closed_count }}</td></tr>
+        <tr><td class="micro-label">Closed</td><td class="num">{{ metrics.closed_count }} <span class="text-dim">(eff. n={{ metrics.effective_closed_count }})</span></td></tr>
         <tr><td class="micro-label">Open</td><td class="num">{{ metrics.open_count }}</td></tr>
         <tr><td class="micro-label">Missed</td><td class="num text-dim">{{ missed_count }}</td></tr>
       </tbody>

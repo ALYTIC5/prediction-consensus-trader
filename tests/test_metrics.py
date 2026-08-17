@@ -4,6 +4,7 @@ Every test uses hand-computed expected values, not properties of the
 implementation itself, matching the style of test_fills.py.
 """
 
+import itertools
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -17,15 +18,26 @@ from app.paper.metrics import (
 NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 STARTING = Decimal("10000")
 
+# Each call defaults to a fresh, distinct condition_id (no event_cluster_id)
+# so effective_closed_count == closed_count in every pre-existing test below
+# - none of them are testing event-clustering behavior, so they should be
+# unaffected by it. The dedicated cluster tests further down pass an
+# explicit condition_id/event_cluster_id instead.
+_condition_id_counter = itertools.count()
+
 
 def _closed(
     realized_pnl: Decimal,
     entry_price: Decimal = Decimal("0.50"),
     size: Decimal = Decimal("100"),
     days_offset: int = 0,
+    condition_id: str | None = None,
+    event_cluster_id: str | None = None,
 ) -> TradeData:
     return TradeData(
         status="CLOSED",
+        condition_id=condition_id or f"0xcond{next(_condition_id_counter)}",
+        event_cluster_id=event_cluster_id,
         entry_price=entry_price,
         size=size,
         realized_pnl=realized_pnl,
@@ -40,6 +52,7 @@ def _open(
 ) -> TradeData:
     return TradeData(
         status="OPEN",
+        condition_id=f"0xcond{next(_condition_id_counter)}",
         entry_price=entry_price,
         size=size,
         unrealized_pnl=unrealized_pnl,
@@ -123,7 +136,7 @@ def test_small_sample_returns_none_for_ratios() -> None:
     assert result.sharpe is None
     assert result.max_drawdown_pct is None
     assert result.insufficient_sample_note is not None
-    assert "n=5<30" in result.insufficient_sample_note
+    assert "n=5, effective n=5<30" in result.insufficient_sample_note
 
 
 def test_no_losing_trades_profit_factor_none() -> None:
@@ -255,6 +268,7 @@ def test_zero_cost_trade_skipped_in_sharpe() -> None:
     trades = [
         TradeData(
             status="CLOSED",
+            condition_id="0xcondzerocost",
             entry_price=Decimal("0"),
             size=Decimal("100"),
             realized_pnl=Decimal("10"),
@@ -272,6 +286,58 @@ def test_zero_cost_trade_skipped_in_sharpe() -> None:
     )
 
     assert result.sharpe is None
+
+
+def test_all_trades_one_event_cluster_collapses_effective_n() -> None:
+    """5 closed trades, all in the same event cluster: nominal n=5 but
+    effective n=1 - they are one real bet, not 5 independent ones.
+    """
+    trades = [
+        _closed(Decimal("10"), days_offset=i, event_cluster_id="event:same-election")
+        for i in range(5)
+    ]
+    result = compute_portfolio_metrics(
+        trades, starting_bankroll=STARTING, current_bankroll=STARTING + 50, min_trades_for_stats=3
+    )
+
+    assert result.closed_count == 5
+    assert result.effective_closed_count == 1
+
+
+def test_trades_across_distinct_events_preserve_effective_n() -> None:
+    """5 closed trades, each in its own distinct event cluster: effective n
+    equals nominal n - genuinely independent observations aren't discounted.
+    """
+    trades = [
+        _closed(Decimal("10"), days_offset=i, event_cluster_id=f"event:distinct-{i}")
+        for i in range(5)
+    ]
+    result = compute_portfolio_metrics(
+        trades, starting_bankroll=STARTING, current_bankroll=STARTING + 50, min_trades_for_stats=3
+    )
+
+    assert result.closed_count == 5
+    assert result.effective_closed_count == 5
+
+
+def test_insufficient_sample_guard_fires_on_effective_n_not_nominal() -> None:
+    """40 closed trades clears a nominal min_trades_for_stats=30 bar, but
+    if they're all one event cluster the effective sample is 1 - the guard
+    must fire on that, not the flattering nominal count.
+    """
+    trades = [
+        _closed(Decimal("10"), days_offset=i, event_cluster_id="event:one-tournament")
+        for i in range(40)
+    ]
+    result = compute_portfolio_metrics(
+        trades, starting_bankroll=STARTING, current_bankroll=STARTING + 400, min_trades_for_stats=30
+    )
+
+    assert result.closed_count == 40
+    assert result.effective_closed_count == 1
+    assert result.win_rate is None
+    assert result.insufficient_sample_note is not None
+    assert "n=40, effective n=1<30" in result.insufficient_sample_note
 
 
 def test_zero_starting_bankroll_roi_none() -> None:

@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from app.optimization.event_clustering import cluster_key_for, effective_sample_size
+
 
 @dataclass(frozen=True)
 class TradeData:
@@ -20,9 +22,17 @@ class TradeData:
     CLOSED trades must have entry_price, size, realized_pnl, and exit_at.
     OPEN trades must have entry_price, size, and unrealized_pnl.
     MISSED trades are filtered out upstream and carry none of these fields.
+    condition_id is required on every trade (closed, open, or missed) - it's
+    the join key event_cluster_id was assigned against, needed to compute
+    effective sample size regardless of status. event_cluster_id is None
+    when app/optimization/event_clustering.py hasn't reached this market
+    yet - cluster_key_for() falls back to a per-market singleton in that
+    case, never silently dropped from the effective-n count.
     """
 
     status: str
+    condition_id: str
+    event_cluster_id: str | None = None
     entry_price: Decimal | None = None
     size: Decimal | None = None
     realized_pnl: Decimal | None = None
@@ -35,12 +45,15 @@ class PortfolioMetrics:
     """Complete set of portfolio performance statistics.
 
     Every ratio-shaped field (win_rate, profit_factor, sharpe) is None when
-    the portfolio has fewer than min_trades_for_stats closed trades, with
-    insufficient_sample_note explaining the gap. Non-ratio fields
+    the portfolio has fewer than min_trades_for_stats EFFECTIVE closed
+    trades (distinct event clusters, not raw trade count - see
+    app/optimization/event_clustering.py), with insufficient_sample_note
+    explaining the gap using both numbers. Non-ratio fields
     (total_realized_pnl, unrealized_pnl, current_bankroll, roi_pct,
     closed_count, open_count) are always populated regardless of sample size.
     avg_win and avg_loss are None when there are no winning or no losing
-    trades respectively.
+    trades respectively. effective_closed_count is always populated (even
+    when insufficient) so a caller can always show "n=X (effective n=Y)".
     """
 
     total_realized_pnl: Decimal
@@ -54,6 +67,7 @@ class PortfolioMetrics:
     max_drawdown_pct: Decimal | None
     sharpe: Decimal | None
     closed_count: int
+    effective_closed_count: int
     open_count: int
     insufficient_sample_note: str | None
 
@@ -159,9 +173,10 @@ def compute_portfolio_metrics(
         The portfolio's current cash balance (from the ORM, already
         reconciled by the engine after every entry/exit).
     min_trades_for_stats:
-        Minimum number of CLOSED trades before ratio-shaped statistics
-        (win_rate, profit_factor, sharpe) are reported. Default matches
-        the global setting (30) but is parameterized for testability.
+        Minimum number of EFFECTIVE closed trades (distinct event clusters,
+        not raw count) before ratio-shaped statistics (win_rate,
+        profit_factor, sharpe) are reported. Default matches the global
+        setting (30) but is parameterized for testability.
 
     Returns
     -------
@@ -171,10 +186,16 @@ def compute_portfolio_metrics(
     opened = [t for t in trades if t.status == "OPEN"]
     closed_count = len(closed)
     open_count = len(opened)
+    effective_closed_count = effective_sample_size(
+        [cluster_key_for(t.condition_id, t.event_cluster_id) for t in closed]
+    )
 
-    insufficient = closed_count < min_trades_for_stats
+    insufficient = effective_closed_count < min_trades_for_stats
     insufficient_note = (
-        f"insufficient sample (n={closed_count}<{min_trades_for_stats})" if insufficient else None
+        f"insufficient sample (n={closed_count}, effective n={effective_closed_count}"
+        f"<{min_trades_for_stats})"
+        if insufficient
+        else None
     )
 
     # --- Always-computed fields ---
@@ -223,6 +244,7 @@ def compute_portfolio_metrics(
             max_drawdown_pct=None,
             sharpe=None,
             closed_count=closed_count,
+            effective_closed_count=effective_closed_count,
             open_count=open_count,
             insufficient_sample_note=insufficient_note,
         )
@@ -253,6 +275,7 @@ def compute_portfolio_metrics(
         max_drawdown_pct=max_drawdown_pct,
         sharpe=sharpe,
         closed_count=closed_count,
+        effective_closed_count=effective_closed_count,
         open_count=open_count,
         insufficient_sample_note=insufficient_note,
     )

@@ -50,6 +50,7 @@ from app.db.models import (
     ConsensusRun,
     JobHeartbeat,
     LeaderboardSnapshot,
+    Market,
     MarketHistory,
     PaperPortfolio,
     PaperTrade,
@@ -69,6 +70,7 @@ from app.db.models import (
     WalletCrowdedness,
 )
 from app.db.session import db_session
+from app.optimization.event_clustering import cluster_key_for, effective_sample_size
 from app.paper.fills import (
     BookLevel,
     FillConfig,
@@ -596,6 +598,14 @@ def check_paper_data() -> list[CheckResult]:
                 .select_from(PaperTrade)
                 .where(PaperTrade.status == PaperTradeStatus.CLOSED)
             ).scalar_one()
+            closed_pairs = session.execute(
+                select(PaperTrade.condition_id, Market.event_cluster_id)
+                .outerjoin(Market, Market.condition_id == PaperTrade.condition_id)
+                .where(PaperTrade.status == PaperTradeStatus.CLOSED)
+            ).all()
+            effective_closed_count = effective_sample_size(
+                [cluster_key_for(cid, cluster_id) for cid, cluster_id in closed_pairs]
+            )
             exit_reasons = dict(
                 session.execute(
                     select(PaperTrade.exit_reason, func.count())
@@ -630,7 +640,8 @@ def check_paper_data() -> list[CheckResult]:
             section,
             "closed trades",
             "PASS" if closed_count > 0 else "WARN",
-            f"{closed_count} closed; exit reasons: "
+            f"{closed_count} closed (effective n={effective_closed_count} event clusters); "
+            "exit reasons: "
             + (", ".join(f"{k}={v}" for k, v in sorted(exit_reasons.items())) or "none"),
         ),
     ]

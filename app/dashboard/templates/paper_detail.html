@@ -139,7 +139,7 @@
     <div class="panel__title"><span>Trade Statistics</span></div>
     <table class="data-table">
       <tbody>
-        <tr><td class="micro-label">Closed</td><td class="num">{{ metrics.closed_count }}</td></tr>
+        <tr><td class="micro-label">Closed</td><td class="num">{{ metrics.closed_count }} <span class="text-dim">(effective n={{ metrics.effective_closed_count }})</span></td></tr>
         <tr><td class="micro-label">Open</td><td class="num">{{ metrics.open_count }}</td></tr>
         <tr><td class="micro-label">Missed</td><td class="num text-dim">{{ missed_count }}</td></tr>
         <tr><td class="micro-label">Avg Hold</td><td class="num">{% if trade_stats.avg_hold_duration_hours is not none %}{{ "%.1f"|format(trade_stats.avg_hold_duration_hours) }}h{% else %}<span class="text-dim">—</span>{% endif %}</td></tr>

@@ -144,6 +144,14 @@ class Settings(BaseSettings):
     # per-market rate.
     paper_fee_rate_default: Decimal = Decimal("0.05")
 
+    # --- Event clustering (app/optimization/event_clustering.py) ---
+    # Fallback bucket width for markets with no event_slug - see that
+    # module's docstring for the full rule and its failure modes. Kept
+    # narrow by default: a wider window widens the false-positive risk
+    # (unrelated same-category markets coincidentally resolving nearby).
+    event_cluster_date_bucket_hours: int = 24
+    event_cluster_interval_seconds: int = 86400
+
     # --- Retention pruning (app/utils/pruning.py, scripts/prune_old_data.py) ---
     # Append-only time-series tables with no natural cap - prices alone
     # grows ~230k rows/day (one row per outcome token per markets-collector

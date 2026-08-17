@@ -1031,6 +1031,7 @@ class PaperComparisonRow:
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
     closed_count: int
+    effective_closed_count: int
     open_count: int
     total_realized_pnl: Decimal | None
     avg_return: Decimal | None
@@ -1096,6 +1097,22 @@ def _trades_for_portfolio(
     return session.execute(query.order_by(PaperTrade.id.desc())).scalars().all()
 
 
+def _event_cluster_ids_for(session: Session, condition_ids: set[str]) -> dict[str, str | None]:
+    """condition_id -> event_cluster_id for the given set - safe to
+    IN-list directly (a portfolio's trades are observed in the hundreds,
+    nowhere near the bind-parameter limit that bit app/collectors/
+    markets.py's position query).
+    """
+    if not condition_ids:
+        return {}
+    rows = session.execute(
+        select(Market.condition_id, Market.event_cluster_id).where(
+            Market.condition_id.in_(condition_ids)
+        )
+    ).all()
+    return dict(rows)
+
+
 def portfolio_metrics_from_db(
     portfolio_id: int, status_filter: str | None = None
 ) -> PortfolioMetrics | None:
@@ -1105,10 +1122,13 @@ def portfolio_metrics_from_db(
         if portfolio is None:
             return None
         trades = _trades_for_portfolio(session, portfolio_id, status_filter)
+        cluster_ids = _event_cluster_ids_for(session, {t.condition_id for t in trades})
 
     trade_data = [
         TradeData(
             status=t.status,
+            condition_id=t.condition_id,
+            event_cluster_id=cluster_ids.get(t.condition_id),
             entry_price=t.entry_price,
             size=t.size,
             realized_pnl=t.realized_pnl,
@@ -1286,6 +1306,7 @@ def get_comparison_data() -> list[PaperComparisonRow]:
                 profit_factor=metrics.profit_factor,
                 max_drawdown_pct=metrics.max_drawdown_pct,
                 closed_count=metrics.closed_count,
+                effective_closed_count=metrics.effective_closed_count,
                 open_count=metrics.open_count,
                 total_realized_pnl=metrics.total_realized_pnl,
                 avg_return=avg_return,
@@ -1504,6 +1525,7 @@ class CalibrationBucketRow:
     score_band: str
     price_band: str
     n: int
+    effective_n: int
     wins: int
     p_hat: Decimal
     ci_low: Decimal
@@ -1767,11 +1789,12 @@ def get_calibration_buckets() -> list[CalibrationBucketRow]:
             score_band=_band_label(score_idx, config.score_bands),
             price_band=_band_label(price_idx, config.price_bands),
             n=bucket.n,
+            effective_n=bucket.effective_n,
             wins=bucket.wins,
             p_hat=bucket.p_hat,
             ci_low=bucket.ci_low,
             ci_high=bucket.ci_high,
-            trusted=bucket.n >= config.min_samples_per_bucket,
+            trusted=bucket.effective_n >= config.min_samples_per_bucket,
         )
         for (cluster_idx, score_idx, price_idx), bucket in stats.items()
     ]

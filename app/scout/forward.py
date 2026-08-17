@@ -38,6 +38,7 @@ from app.db.models import (
 )
 from app.db.session import db_session
 from app.optimization.clv import resolve_horizon_clv, resolve_resolution_clv
+from app.optimization.event_clustering import cluster_key_for, effective_sample_size
 from app.paper.resolution import detect_resolution
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,17 @@ class ForwardConfig:
 
 
 @dataclass(frozen=True)
+class ForwardTradeRecord:
+    """One forward-tracked trade's CLV plus its clustering join key - plain
+    values, not an ORM row, so clv_window_stats stays DB-free.
+    """
+
+    condition_id: str
+    event_cluster_id: str | None
+    clv: Decimal
+
+
+@dataclass(frozen=True)
 class WindowStats:
     """A window's aggregate forward-CLV stats - n, mean, and a 95% CI on
     the mean via the normal approximation (mean +/- z * stderr) - CLV
@@ -85,9 +97,17 @@ class WindowStats:
     wilson_interval doesn't apply here; this is the direct analogue for a
     sample mean, at the same confidence level the rest of this project
     already uses everywhere else (Wilson's own z=1.96).
+
+    effective_n is the number of distinct event clusters the window's
+    trades actually span (app/optimization/event_clustering.py) - a wallet
+    that took 8 positions across one tournament is one real bet observed
+    8 times, not 8 independent confirmations of its forward skill.
+    window_ready_to_close and evaluate_window both gate on effective_n,
+    not n.
     """
 
     n: int
+    effective_n: int
     avg_clv: Decimal
     ci_low: Decimal
     ci_high: Decimal
@@ -104,7 +124,7 @@ class WindowVerdict:
 
 
 def clv_window_stats(
-    clv_values: list[Decimal], confidence_z: Decimal = _CONFIDENCE_Z
+    records: list[ForwardTradeRecord], confidence_z: Decimal = _CONFIDENCE_Z
 ) -> WindowStats:
     """Mean forward CLV and its 95% CI over one window's trades. n=0 scores
     a neutral (0, 0, 0) - nothing to report yet, never an error. n=1 has no
@@ -113,32 +133,45 @@ def clv_window_stats(
     practice this never matters, since a window never closes below
     SCOUT_MIN_FORWARD_TRADES anyway (see window_ready_to_close).
     """
-    n = len(clv_values)
+    n = len(records)
+    effective_n = effective_sample_size(
+        [cluster_key_for(r.condition_id, r.event_cluster_id) for r in records]
+    )
     if n == 0:
-        return WindowStats(n=0, avg_clv=Decimal(0), ci_low=Decimal(0), ci_high=Decimal(0))
+        return WindowStats(
+            n=0, effective_n=0, avg_clv=Decimal(0), ci_low=Decimal(0), ci_high=Decimal(0)
+        )
+    clv_values = [r.clv for r in records]
     mean = sum(clv_values, Decimal(0)) / Decimal(n)
     if n == 1:
-        return WindowStats(n=1, avg_clv=mean, ci_low=mean, ci_high=mean)
+        return WindowStats(n=1, effective_n=effective_n, avg_clv=mean, ci_low=mean, ci_high=mean)
     variance = sum(((v - mean) ** 2 for v in clv_values), Decimal(0)) / Decimal(n - 1)
     stderr = variance.sqrt() / Decimal(n).sqrt()
     margin = confidence_z * stderr
-    return WindowStats(n=n, avg_clv=mean, ci_low=mean - margin, ci_high=mean + margin)
+    return WindowStats(
+        n=n, effective_n=effective_n, avg_clv=mean, ci_low=mean - margin, ci_high=mean + margin
+    )
 
 
 def window_ready_to_close(
     window_start: datetime,
     now: datetime,
     validation_days: int,
-    trade_count: int,
+    effective_trade_count: int,
     min_forward_trades: int,
 ) -> bool:
     """A window closes once BOTH its calendar span has elapsed AND it has
     enough forward trades - whichever condition is slower to satisfy sets
     the actual close time (docs/SCOUT_DESIGN.md: "keep tracking until it
-    does; don't judge on a thin forward sample").
+    does; don't judge on a thin forward sample"). Gated on effective_trade_count
+    (distinct event clusters, app/optimization/event_clustering.py), not
+    the raw count - 8 forward trades in one tournament is one real
+    confirmation of forward skill, not 8.
     """
     elapsed = now - window_start
-    return elapsed >= timedelta(days=validation_days) and trade_count >= min_forward_trades
+    return (
+        elapsed >= timedelta(days=validation_days) and effective_trade_count >= min_forward_trades
+    )
 
 
 def evaluate_window(stats: WindowStats) -> str:
@@ -353,29 +386,43 @@ def close_ready_windows(
         if window_start is None:
             continue
 
-        clv_values = list(
-            session.execute(
-                select(ScoutForwardTrade.clv_horizon).where(
-                    ScoutForwardTrade.wallet_id == wallet_id,
-                    ScoutForwardTrade.entry_at >= window_start,
-                    ScoutForwardTrade.entry_at < now,
-                    ScoutForwardTrade.clv_horizon.is_not(None),
-                )
-            ).scalars()
-        )
+        rows = session.execute(
+            select(
+                ScoutForwardTrade.condition_id,
+                Market.event_cluster_id,
+                ScoutForwardTrade.clv_horizon,
+            )
+            .outerjoin(Market, Market.condition_id == ScoutForwardTrade.condition_id)
+            .where(
+                ScoutForwardTrade.wallet_id == wallet_id,
+                ScoutForwardTrade.entry_at >= window_start,
+                ScoutForwardTrade.entry_at < now,
+                ScoutForwardTrade.clv_horizon.is_not(None),
+            )
+        ).all()
+        records = [
+            ForwardTradeRecord(
+                condition_id=row.condition_id,
+                event_cluster_id=row.event_cluster_id,
+                clv=row.clv_horizon,
+            )
+            for row in rows
+        ]
+
+        stats = clv_window_stats(records, config.confidence_z)
 
         if not window_ready_to_close(
-            window_start, now, config.validation_days, len(clv_values), config.min_forward_trades
+            window_start, now, config.validation_days, stats.effective_n, config.min_forward_trades
         ):
             continue
 
-        stats = clv_window_stats(clv_values, config.confidence_z)
         verdict = evaluate_window(stats)
         row = ScoutValidationWindow(
             wallet_id=wallet_id,
             window_started_at=window_start,
             window_ended_at=now,
             forward_trade_count=stats.n,
+            effective_forward_trade_count=stats.effective_n,
             avg_forward_clv=stats.avg_clv,
             ci_low=stats.ci_low,
             ci_high=stats.ci_high,

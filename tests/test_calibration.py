@@ -7,6 +7,7 @@ makes get_p_hat honestly return None on sparse data, and the rolling-window
 recency mechanism's actual effect (docs/PHASE5_DESIGN.md sections 4/6).
 """
 
+import itertools
 from decimal import Decimal
 
 import pytest
@@ -41,13 +42,27 @@ DEFAULT_CONFIG = CalibrationConfig(
 )
 
 
+_condition_id_counter = itertools.count()
+
+
 def _record(
     cluster_count: int = 3,
     weighted_score: Decimal = Decimal("1.2"),
     average_entry_price: Decimal = Decimal("0.5"),
     won: bool = True,
+    condition_id: str | None = None,
+    event_cluster_id: str | None = None,
 ) -> ResolvedTradeRecord:
+    """condition_id defaults to a fresh, distinct value on every call (not
+    just every distinct argument combination) - existing tests that build
+    a sample via `[_record(...)] * n` or a list comprehension expect each
+    entry to count as its own independent observation for effective_n
+    unless a test is deliberately exercising clustering, in which case it
+    passes condition_id/event_cluster_id explicitly.
+    """
     return ResolvedTradeRecord(
+        condition_id=condition_id or f"0xcond{next(_condition_id_counter)}",
+        event_cluster_id=event_cluster_id,
         cluster_count=cluster_count,
         weighted_score=weighted_score,
         average_entry_price=average_entry_price,
@@ -71,9 +86,9 @@ def _features(
 
 
 def test_records_with_different_features_land_in_different_buckets():
-    low_score = _record(weighted_score=Decimal("1.2"), won=True)
-    high_score = _record(weighted_score=Decimal("2.5"), won=False)
-    stats = compute_bucket_stats([low_score] * 5 + [high_score] * 5, DEFAULT_CONFIG)
+    low_scores = [_record(weighted_score=Decimal("1.2"), won=True) for _ in range(5)]
+    high_scores = [_record(weighted_score=Decimal("2.5"), won=False) for _ in range(5)]
+    stats = compute_bucket_stats(low_scores + high_scores, DEFAULT_CONFIG)
     assert len(stats) == 2
 
     p_low = get_p_hat(stats, _features(weighted_score=Decimal("1.2")), DEFAULT_CONFIG)
@@ -83,7 +98,7 @@ def test_records_with_different_features_land_in_different_buckets():
 
 
 def test_records_sharing_all_three_bands_are_pooled_into_one_bucket():
-    records = [_record(won=True)] * 3 + [_record(won=False)] * 2
+    records = [_record(won=True) for _ in range(3)] + [_record(won=False) for _ in range(2)]
     stats = compute_bucket_stats(records, DEFAULT_CONFIG)
     assert len(stats) == 1
     (bucket,) = stats.values()
@@ -99,14 +114,16 @@ def test_bucketing_keys_on_cluster_count_not_raw_wallet_count():
     band's min of 2 here - not bucketable at all), not as 5 wallets landing
     comfortably in the "5+" band the way raw wallet counting would.
     """
-    five_wallets_one_cluster = _record(cluster_count=1, won=True)
-    stats = compute_bucket_stats([five_wallets_one_cluster] * 10, DEFAULT_CONFIG)
+    stats = compute_bucket_stats(
+        [_record(cluster_count=1, won=True) for _ in range(10)], DEFAULT_CONFIG
+    )
     # cluster_count=1 is below the lowest cluster band (2-3) - correctly
     # un-bucketable, proving the field really does drive bucketing.
     assert stats == {}
 
-    five_independent_clusters = _record(cluster_count=5, won=True)
-    stats = compute_bucket_stats([five_independent_clusters] * 10, DEFAULT_CONFIG)
+    stats = compute_bucket_stats(
+        [_record(cluster_count=5, won=True) for _ in range(10)], DEFAULT_CONFIG
+    )
     assert len(stats) == 1  # lands in the 5+ band
 
 
@@ -114,7 +131,7 @@ def test_record_below_the_lowest_band_on_any_dimension_is_dropped():
     # weighted_score=0.5 is below the lowest score band's min (1.0) - not
     # bucketable at all, same as a signal that would never reach the paper
     # engine under default entry filters.
-    records = [_record(weighted_score=Decimal("0.5"))] * 10
+    records = [_record(weighted_score=Decimal("0.5")) for _ in range(10)]
     stats = compute_bucket_stats(records, DEFAULT_CONFIG)
     assert stats == {}
 
@@ -160,17 +177,18 @@ def test_wilson_interval_is_bounded_to_zero_one():
 
 
 def test_bucket_below_min_samples_returns_none():
-    records = [_record(won=True)] * 4  # min_samples_per_bucket is 5
+    records = [_record(won=True) for _ in range(4)]  # min_samples_per_bucket is 5
     stats = compute_bucket_stats(records, DEFAULT_CONFIG)
     assert get_p_hat(stats, _features(), DEFAULT_CONFIG) is None
 
 
 def test_bucket_at_min_samples_returns_a_result():
-    records = [_record(won=True)] * 5  # exactly at the gate
+    records = [_record(won=True) for _ in range(5)]  # exactly at the gate
     stats = compute_bucket_stats(records, DEFAULT_CONFIG)
     result = get_p_hat(stats, _features(), DEFAULT_CONFIG)
     assert result is not None
     assert result.n == 5
+    assert result.effective_n == 5
     assert result.p_hat == Decimal("1")
 
 
@@ -180,11 +198,47 @@ def test_empty_bucket_returns_none():
 
 
 def test_features_below_lowest_band_return_none_even_with_rich_stats():
-    records = [_record(cluster_count=3, won=True)] * 20
+    records = [_record(cluster_count=3, won=True) for _ in range(20)]
     stats = compute_bucket_stats(records, DEFAULT_CONFIG)
     # cluster_count=1 is below the lowest cluster band's min (2).
     below = _features(cluster_count=1)
     assert get_p_hat(stats, below, DEFAULT_CONFIG) is None
+
+
+# --- effective sample size (event clustering) ---
+
+
+def test_bucket_effective_n_collapses_when_all_records_share_one_event():
+    """5 records, all in the same event cluster: nominal n=5 clears
+    min_samples_per_bucket=5, but effective_n=1 means the gate must still
+    fail - they're one real bet, not 5 independent confirmations.
+    """
+    records = [
+        _record(won=True, condition_id=f"0xcond{i}", event_cluster_id="event:same-election")
+        for i in range(5)
+    ]
+    stats = compute_bucket_stats(records, DEFAULT_CONFIG)
+    (bucket,) = stats.values()
+    assert bucket.n == 5
+    assert bucket.effective_n == 1
+    assert get_p_hat(stats, _features(), DEFAULT_CONFIG) is None
+
+
+def test_bucket_effective_n_preserved_across_distinct_events():
+    """5 records, each its own distinct event cluster: effective_n equals
+    nominal n, and the gate passes normally.
+    """
+    records = [
+        _record(won=True, condition_id=f"0xcond{i}", event_cluster_id=f"event:distinct-{i}")
+        for i in range(5)
+    ]
+    stats = compute_bucket_stats(records, DEFAULT_CONFIG)
+    (bucket,) = stats.values()
+    assert bucket.n == 5
+    assert bucket.effective_n == 5
+    result = get_p_hat(stats, _features(), DEFAULT_CONFIG)
+    assert result is not None
+    assert result.effective_n == 5
 
 
 # --- recency weighting behaves ---
@@ -207,8 +261,8 @@ def test_recency_window_changes_p_hat_when_stale_trades_are_excluded():
         min_samples_per_bucket=2,
         window_days=90,
     )
-    recent_wins = [_record(won=True)] * 2
-    stale_losses = [_record(won=False)] * 3  # would be outside the window
+    recent_wins = [_record(won=True) for _ in range(2)]
+    stale_losses = [_record(won=False) for _ in range(3)]  # would be outside the window
 
     stats_including_stale = compute_bucket_stats(recent_wins + stale_losses, config)
     stats_window_only = compute_bucket_stats(recent_wins, config)

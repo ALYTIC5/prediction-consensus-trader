@@ -123,6 +123,11 @@ class ScoutValidationWindow(Base):
     window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     window_ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     forward_trade_count: Mapped[int] = mapped_column()
+    # Distinct event clusters (app/optimization/event_clustering.py) the
+    # window's trades actually span - what window_ready_to_close/
+    # evaluate_window actually gate on. Nullable: a window closed before
+    # this column existed has no way to recover this retroactively.
+    effective_forward_trade_count: Mapped[int | None] = mapped_column()
     avg_forward_clv: Mapped[Decimal] = mapped_column(Money)
     ci_low: Mapped[Decimal] = mapped_column(Money)
     ci_high: Mapped[Decimal] = mapped_column(Money)
