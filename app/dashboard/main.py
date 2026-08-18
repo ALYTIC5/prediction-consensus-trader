@@ -496,6 +496,25 @@ def risk_page(request: Request, portfolio_id: int = 0, rule: str = ""):
     return templates.TemplateResponse(request, "risk.html", context)
 
 
+@app.get("/coherence")
+def coherence_page(request: Request):
+    """The Coherence page: live provable-mispricing violations, historical
+    frequency and duration by type, and the coherence portfolio's real
+    capture P&L - see docs/COHERENCE_DESIGN.md. Read-only.
+    """
+    captured, actionable_total = queries.get_coherence_capture_stats()
+    context = {
+        "active_page": "coherence",
+        "live_opportunities": queries.get_coherence_live_opportunities(),
+        "frequency": queries.get_coherence_frequency(),
+        "duration_stats": queries.get_coherence_duration_stats(),
+        "portfolio_metrics": queries.get_coherence_portfolio_metrics(),
+        "captured": captured,
+        "actionable_total": actionable_total,
+    }
+    return templates.TemplateResponse(request, "coherence.html", context)
+
+
 @app.get("/optimization")
 def optimization_page(request: Request):
     """The Optimization page: Phase 6 signal-quality overview - cluster

@@ -1,6 +1,12 @@
 # Every model must be imported here so Alembic's autogenerate (which scans
 # Base.metadata) actually discovers it — a model defined but never imported
 # is invisible to migrations.
+from app.db.models.coherence import (
+    CoherenceFill,
+    CoherenceFillStatus,
+    CoherenceOpportunity,
+    CoherenceOpportunityType,
+)
 from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
 from app.db.models.markets import FeeRate, Market, MarketHistory, OrderBook, PriceSnapshot
 from app.db.models.optimization import (
@@ -28,6 +34,10 @@ from app.db.models.wallets import LeaderboardSnapshot, Wallet
 __all__ = [
     "AppState",
     "ClusterBanditState",
+    "CoherenceFill",
+    "CoherenceFillStatus",
+    "CoherenceOpportunity",
+    "CoherenceOpportunityType",
     "ConsensusRun",
     "FeeRate",
     "JobHeartbeat",

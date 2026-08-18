@@ -5,6 +5,7 @@ import contextlib
 import logging
 import signal
 
+from app.coherence.scan import run_coherence_scan
 from app.collectors.fee_rates import collect as collect_fee_rates
 from app.collectors.leaderboard import collect as collect_leaderboard
 from app.collectors.markets import collect as collect_markets
@@ -92,6 +93,11 @@ async def _run() -> None:
                 name="category_scoring",
                 run=run_category_scoring_job,
                 interval_seconds=settings.category_scoring_interval_seconds,
+            ),
+            PeriodicJob(
+                name="coherence",
+                run=lambda: run_coherence_scan(client, settings),
+                interval_seconds=settings.coherence_scan_interval_seconds,
             ),
             PeriodicJob(
                 name="event_clustering",

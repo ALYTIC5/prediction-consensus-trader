@@ -152,6 +152,24 @@ class Settings(BaseSettings):
     event_cluster_date_bucket_hours: int = 24
     event_cluster_interval_seconds: int = 86400
 
+    # --- Coherence arbitrage (app/coherence/) - see docs/COHERENCE_DESIGN.md ---
+    coherence_scan_interval_seconds: int = 180
+    # Minimum gross (top-of-book) spread before a candidate is even worth
+    # book-walking - smaller than this is almost certainly fee-negative
+    # before fill cost is even considered.
+    coherence_min_edge: Decimal = Decimal("0.01")
+    coherence_max_book_depth_fraction: Decimal = Decimal("0.20")
+    coherence_fee_rate_default: Decimal = Decimal("0.05")
+    # Hard cap on capital committed to any single captured opportunity -
+    # an illiquid/mispriced market can't swallow the whole portfolio on
+    # one bet.
+    coherence_max_position_notional: Decimal = Decimal("20")
+    # Highest-liquidity not-yet-closed markets scanned per cycle - brand
+    # new CLOB call volume (book + fee rate per outcome token), start
+    # conservative like every other new surface this project has added.
+    coherence_max_markets_per_cycle: int = 50
+    coherence_starting_bankroll: Decimal = Decimal("100")
+
     # --- Retention pruning (app/utils/pruning.py, scripts/prune_old_data.py) ---
     # Append-only time-series tables with no natural cap - prices alone
     # grows ~230k rows/day (one row per outcome token per markets-collector
@@ -541,6 +559,9 @@ class Settings(BaseSettings):
             "paper_scalp_breakeven_tolerance",
             "paper_max_book_depth_fraction",
             "paper_fee_rate_default",
+            "coherence_min_edge",
+            "coherence_max_book_depth_fraction",
+            "coherence_fee_rate_default",
             "risk_max_position_pct",
             "risk_max_exposure_pct",
             "risk_max_market_exposure_pct",

@@ -28,6 +28,9 @@ from app.config.effective import get_effective_settings
 from app.config.settings import Settings, get_settings
 from app.db.models import (
     ClusterBanditState,
+    CoherenceFill,
+    CoherenceFillStatus,
+    CoherenceOpportunity,
     ConsensusRun,
     JobHeartbeat,
     LeaderboardSnapshot,
@@ -2345,4 +2348,176 @@ def get_scout_wallet_detail(wallet_id: int) -> ScoutWalletDetail | None:
             )
             for transition in transitions
         ],
+    )
+
+
+# --- Coherence arbitrage page (docs/COHERENCE_DESIGN.md) ---
+
+
+@dataclass(frozen=True)
+class CoherenceOpportunityRow:
+    id: int
+    type: str
+    legs: list[dict]
+    gross_spread: Decimal
+    net_profit: Decimal | None
+    size: Decimal | None
+    required_capital: Decimal | None
+    detected_at: datetime
+    last_seen_at: datetime
+    age_seconds: float
+    captured: bool
+
+
+@dataclass(frozen=True)
+class CoherenceFrequencyRow:
+    type: str
+    count: int
+
+
+@dataclass(frozen=True)
+class CoherenceDurationRow:
+    type: str
+    resolved_count: int
+    avg_duration_seconds: float
+    max_duration_seconds: float
+
+
+def get_coherence_live_opportunities() -> list[CoherenceOpportunityRow]:
+    """Every currently-open violation (not yet resolved/vanished),
+    newest-detected first.
+    """
+    now = datetime.now(UTC)
+    with db_session() as session:
+        rows = (
+            session.execute(
+                select(CoherenceOpportunity)
+                .where(CoherenceOpportunity.resolved_at.is_(None))
+                .order_by(CoherenceOpportunity.detected_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        CoherenceOpportunityRow(
+            id=r.id,
+            type=r.type,
+            legs=r.legs,
+            gross_spread=r.gross_spread,
+            net_profit=r.net_profit,
+            size=r.size,
+            required_capital=r.required_capital,
+            detected_at=r.detected_at,
+            last_seen_at=r.last_seen_at,
+            age_seconds=(now - r.detected_at).total_seconds(),
+            captured=r.captured,
+        )
+        for r in rows
+    ]
+
+
+def get_coherence_frequency(days: int = 14) -> list[CoherenceFrequencyRow]:
+    """Opportunities detected (by opportunity_key - one per persisting
+    violation, not one per scan) per type, over the trailing window.
+    """
+    window_start = datetime.now(UTC) - timedelta(days=days)
+    with db_session() as session:
+        rows = session.execute(
+            select(CoherenceOpportunity.type, func.count())
+            .where(CoherenceOpportunity.detected_at >= window_start)
+            .group_by(CoherenceOpportunity.type)
+        ).all()
+    return sorted([CoherenceFrequencyRow(type=t, count=c) for t, c in rows], key=lambda r: -r.count)
+
+
+def get_coherence_duration_stats() -> list[CoherenceDurationRow]:
+    """How long a violation persisted (resolved_at - detected_at) before
+    it stopped being detected, by type - the number that answers whether
+    this is a real, tradeable edge or something that vanishes in one scan
+    cycle (see docs/COHERENCE_DESIGN.md).
+    """
+    with db_session() as session:
+        rows = session.execute(
+            select(
+                CoherenceOpportunity.type,
+                CoherenceOpportunity.detected_at,
+                CoherenceOpportunity.resolved_at,
+            ).where(CoherenceOpportunity.resolved_at.is_not(None))
+        ).all()
+    durations_by_type: dict[str, list[float]] = {}
+    for opp_type, detected_at, resolved_at in rows:
+        durations_by_type.setdefault(opp_type, []).append(
+            (resolved_at - detected_at).total_seconds()
+        )
+    results = []
+    for opp_type, durations in durations_by_type.items():
+        results.append(
+            CoherenceDurationRow(
+                type=opp_type,
+                resolved_count=len(durations),
+                avg_duration_seconds=sum(durations) / len(durations),
+                max_duration_seconds=max(durations),
+            )
+        )
+    return sorted(results, key=lambda r: -r.resolved_count)
+
+
+def get_coherence_capture_stats() -> tuple[int, int]:
+    """(captured, actionable_total) across every opportunity ever detected
+    of an actionable type - the honest "how many vanished before we could
+    fill" figure.
+    """
+    actionable_types = ("YES_NO_SUM_ASK", "MULTI_OUTCOME_ASK")
+    with db_session() as session:
+        total = session.execute(
+            select(func.count()).where(CoherenceOpportunity.type.in_(actionable_types))
+        ).scalar_one()
+        captured = session.execute(
+            select(func.count()).where(
+                CoherenceOpportunity.type.in_(actionable_types),
+                CoherenceOpportunity.captured.is_(True),
+            )
+        ).scalar_one()
+    return captured, total
+
+
+def get_coherence_portfolio() -> PaperPortfolio | None:
+    with db_session() as session:
+        return session.execute(
+            select(PaperPortfolio).where(PaperPortfolio.name == "coherence")
+        ).scalar_one_or_none()
+
+
+def get_coherence_portfolio_metrics() -> PortfolioMetrics | None:
+    """Same pure compute_portfolio_metrics every other portfolio uses,
+    fed from coherence_fills instead of paper_trades (see
+    docs/COHERENCE_DESIGN.md's data model on why coherence has its own
+    fills table).
+    """
+    portfolio = get_coherence_portfolio()
+    if portfolio is None:
+        return None
+    with db_session() as session:
+        fills = (
+            session.execute(select(CoherenceFill).where(CoherenceFill.portfolio_id == portfolio.id))
+            .scalars()
+            .all()
+        )
+    trade_data = [
+        TradeData(
+            status="CLOSED" if f.status == CoherenceFillStatus.CLOSED else "OPEN",
+            condition_id=f.condition_id,
+            entry_price=f.entry_price,
+            size=f.size,
+            realized_pnl=f.realized_pnl,
+            unrealized_pnl=Decimal("0") if f.status == CoherenceFillStatus.OPEN else None,
+            exit_at=f.exit_at,
+        )
+        for f in fills
+    ]
+    return compute_portfolio_metrics(
+        trades=trade_data,
+        starting_bankroll=portfolio.starting_bankroll,
+        current_bankroll=portfolio.current_bankroll,
+        min_trades_for_stats=get_settings().paper_min_trades_for_stats,
     )
