@@ -30,3 +30,31 @@ class TraderScore(Base):
     all_time_component: Mapped[Decimal] = mapped_column(Money)
     consistency_component: Mapped[Decimal] = mapped_column(Money)
     score: Mapped[Decimal] = mapped_column(Money)
+
+
+class WalletMarketMakerScore(Base):
+    """One wallet's market-maker score at one scoring cycle - append-only,
+    same "history, never updated in place" convention as TraderScore.
+
+    See app/optimization/market_maker.py for the full detection design.
+    score is in [0, 1] via a noisy-OR of the three components - high means
+    "this wallet's positions look like inventory artifacts of providing
+    liquidity, not directional views," and app/signals/generator.py uses
+    the latest row per wallet to down-weight (or exclude) its contribution
+    to consensus.
+    """
+
+    __tablename__ = "wallet_market_maker_scores"
+    __table_args__ = (
+        Index("ix_wallet_market_maker_scores_wallet_id_computed_at", "wallet_id", "computed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    holding_period_component: Mapped[Decimal] = mapped_column(Money)
+    both_sides_component: Mapped[Decimal] = mapped_column(Money)
+    breadth_depth_component: Mapped[Decimal] = mapped_column(Money)
+    score: Mapped[Decimal] = mapped_column(Money)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

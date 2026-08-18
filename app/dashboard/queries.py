@@ -69,6 +69,7 @@ from app.optimization.clv import (
     aggregate_clv_trend,
 )
 from app.optimization.crowdedness import hidden_alpha_score
+from app.optimization.market_maker import latest_market_maker_scores
 from app.paper.engine import resolve_calibration_config, resolve_risk_config
 from app.paper.metrics import (
     CredibilityGap,
@@ -486,6 +487,10 @@ class TraderRow:
     all_time_component: Decimal
     consistency_component: Decimal
     score: Decimal
+    # None means never scored yet (app/optimization/market_maker.py's job
+    # hasn't reached this wallet) - never fabricated to 0, which would
+    # read as "confirmed not a market maker" rather than "unknown".
+    market_maker_score: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -501,7 +506,10 @@ class WalletDetail:
 
 
 def get_trader_scores() -> list[TraderRow]:
-    """Each wallet's most recent score, highest score first."""
+    """Each wallet's most recent score, highest score first, alongside its
+    most recent market_maker_score (app/optimization/market_maker.py) -
+    None for a wallet that job hasn't reached yet.
+    """
     with db_session() as session:
         ranked = select(
             TraderScore.wallet_id,
@@ -513,6 +521,8 @@ def get_trader_scores() -> list[TraderRow]:
             .over(partition_by=TraderScore.wallet_id, order_by=TraderScore.captured_at.desc())
             .label("rn"),
         ).subquery()
+        wallet_ids = set(session.execute(select(ranked.c.wallet_id)).scalars())
+        mm_scores = latest_market_maker_scores(session, wallet_ids)
         rows = session.execute(
             select(
                 ranked.c.wallet_id,
@@ -539,6 +549,7 @@ def get_trader_scores() -> list[TraderRow]:
             all_time_component=row.all_time_component,
             consistency_component=row.consistency_component,
             score=row.score,
+            market_maker_score=mm_scores.get(row.wallet_id),
         )
         for row in rows
     ]

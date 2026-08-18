@@ -33,6 +33,7 @@
           <th>Consistency</th>
           <th class="num">Score</th>
           <th>Tracked</th>
+          <th>Market maker?</th>
         </tr>
       </thead>
       <tbody>
@@ -62,6 +63,15 @@
             <span class="status-dot status-dot--fresh" title="tracked"></span>
             {% else %}
             <span class="status-dot status-dot--dead" title="not tracked"></span>
+            {% endif %}
+          </td>
+          <td>
+            {% if trader.market_maker_score is none %}
+            <span class="text-dim">&mdash;</span>
+            {% elif trader.market_maker_score >= 0.6 %}
+            <span class="tag tag--alert" title="market_maker_score={{ '%.2f'|format(trader.market_maker_score) }}">Likely MM</span>
+            {% else %}
+            <span class="text-dim">{{ "%.2f"|format(trader.market_maker_score) }}</span>
             {% endif %}
           </td>
         </tr>

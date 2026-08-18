@@ -39,6 +39,7 @@ from app.db.models import (
     WalletCluster,
 )
 from app.db.session import db_session
+from app.optimization.market_maker import latest_market_maker_multipliers
 from app.optimization.scoring_category import latest_category_scores
 
 logger = logging.getLogger(__name__)
@@ -107,11 +108,16 @@ def _run_cycle(now: datetime) -> _CycleResult:
         # weighting purposes. TraderScore/compute_score is untouched and
         # still drives is_tracked selection in app/consensus/scorer.py.
         category_scores = latest_category_scores(session, wallet_ids)
+        # app/optimization/market_maker.py: a wallet whose positions look
+        # like liquidity provision, not directional views, gets its
+        # category score down-weighted (or excluded) before it ever
+        # reaches consensus - see _build_groups' docstring.
+        market_maker_multiplier = latest_market_maker_multipliers(session, wallet_ids, settings)
         markets = _load_markets(session, condition_ids)
         prices = _latest_prices_by_asset(session, assets)
         cluster_of = _cluster_of_by_address(session, wallets)
 
-        groups = _build_groups(events, wallets, category_scores, markets)
+        groups = _build_groups(events, wallets, category_scores, market_maker_multiplier, markets)
 
         results: list[SignalDraft | Rejection] = []
         new_lines: list[str] = []
@@ -272,12 +278,19 @@ def _build_groups(
     events: list[PositionHistory],
     wallets: dict[int, Wallet],
     category_scores: dict[tuple[int, str], Decimal],
+    market_maker_multiplier: dict[int, Decimal],
     markets: dict[str, Market],
 ) -> list[CandidateGroup]:
     """Builds one CandidateGroup per (condition_id, asset), each
     contributor's weight resolved to that wallet's score IN THIS GROUP'S
     MARKET CATEGORY (docs/PHASE6_DESIGN.md workstream 3, applied per
-    category) - not a flat global trader_scores.score.
+    category) - not a flat global trader_scores.score - then scaled by
+    that wallet's market-maker multiplier (app/optimization/
+    market_maker.py: 1.0 for a wallet with no evidence of market-making,
+    down to 0.0 for one confidently excluded). Applied here, before a
+    contributor's weight ever reaches _weighted_score()'s cluster
+    collapse, so a market maker's inflated category score never borrows
+    influence the same way an unclustered Sybil wallet's would.
 
     ==========================================================================
     THIS COMPOUNDS WITH PHASE 6 WORKSTREAM 1's CLUSTERING FIX. See
@@ -309,11 +322,13 @@ def _build_groups(
         key = (row.condition_id, row.asset)
         market = markets.get(row.condition_id)
         category = market.category if market is not None else DEFAULT_CATEGORY
+        category_score = category_scores.get((row.wallet_id, category), Decimal(0))
+        mm_multiplier = market_maker_multiplier.get(row.wallet_id, Decimal(1))
         grouped[key].append(
             ContributorEvent(
                 address=wallet.address,
                 username=wallet.username,
-                weight=category_scores.get((row.wallet_id, category), Decimal(0)),
+                weight=category_score * mm_multiplier,
                 event_type=row.event_type,
                 acted_size=_acted_size(row),
                 entry_price=_entry_price(row),

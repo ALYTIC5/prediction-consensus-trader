@@ -268,6 +268,27 @@ class Settings(BaseSettings):
     ranking_min_resolved_trades: int = 5
     category_scoring_interval_seconds: int = 3600
 
+    # --- Market-maker detection (app/optimization/market_maker.py) ---
+    # A high-performing wallet whose positions are inventory artifacts of
+    # providing liquidity, not directional views, corrupts consensus the
+    # same way an unclustered Sybil ring does - detected from position
+    # history already collected, no new API surface needed.
+    market_maker_scoring_interval_seconds: int = (
+        21600  # 6h - a slow-moving trait, not a fast signal
+    )
+    market_maker_score_threshold: Decimal = Decimal("0.6")
+    # "downweight": multiply the wallet's consensus weight by (1 - score)
+    # once above threshold. "exclude": zero it out entirely above threshold.
+    market_maker_mode: str = "downweight"
+    # Breadth/depth references (app/optimization/market_maker.py's
+    # compute_breadth_depth_component) - fixed, tunable thresholds rather
+    # than derived from the tracked-wallet population each cycle, so the
+    # score's meaning doesn't silently drift as the population composition
+    # changes (unlike the holding-period signal, which the task itself
+    # specifies as population-relative).
+    market_maker_breadth_reference: int = 30
+    market_maker_depth_reference_usd: Decimal = Decimal("500")
+
     # --- Phase 6 workstream 7: on-chain crowdedness penalty ---
     # See docs/PHASE6_DESIGN.md workstream 7. app/optimization/crowdedness.py.
     # On-chain data only (position_history/leaderboard_snapshots/markets) -
@@ -597,6 +618,7 @@ class Settings(BaseSettings):
             "consensus_prob_min_confidence",
             "consensus_prob_fixed_fraction_pct",
             "consensus_prob_fee_rate_default",
+            "market_maker_score_threshold",
             "risk_max_position_pct",
             "risk_max_exposure_pct",
             "risk_max_market_exposure_pct",
@@ -723,6 +745,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"risk_default_sizer must be one of {sorted(valid)}, "
                 f"got {self.risk_default_sizer!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_market_maker_mode(self) -> "Settings":
+        valid = {"downweight", "exclude"}
+        if self.market_maker_mode not in valid:
+            raise ValueError(
+                f"market_maker_mode must be one of {sorted(valid)}, got {self.market_maker_mode!r}"
             )
         return self
 

@@ -60,7 +60,7 @@ def test_contributor_weight_is_the_category_correct_score():
     }
     events = [_event(1, "0xsports"), _event(1, "0xpolitics")]
 
-    groups = _build_groups(events, wallets, category_scores, markets)
+    groups = _build_groups(events, wallets, category_scores, {}, markets)
     weight_by_condition = {g.condition_id: g.events[0].weight for g in groups}
 
     assert weight_by_condition["0xsports"] == Decimal("0.8")
@@ -77,7 +77,7 @@ def test_missing_category_score_falls_back_to_low_neutral_not_global():
     category_scores: dict[tuple[int, str], Decimal] = {}  # nothing computed yet
     events = [_event(1, "0xcrypto")]
 
-    groups = _build_groups(events, wallets, category_scores, markets)
+    groups = _build_groups(events, wallets, category_scores, {}, markets)
     assert groups[0].events[0].weight == Decimal("0")
 
 
@@ -91,7 +91,7 @@ def test_unknown_market_defaults_to_other_category():
     category_scores = {(1, "Other"): Decimal("0.3")}
     events = [_event(1, "0xunknown")]
 
-    groups = _build_groups(events, wallets, category_scores, markets)
+    groups = _build_groups(events, wallets, category_scores, {}, markets)
     assert groups[0].events[0].weight == Decimal("0.3")
 
 
@@ -100,5 +100,52 @@ def test_event_from_an_unknown_wallet_is_dropped():
     markets = {"0xsports": _market("0xsports", "Sports")}
     events = [_event(1, "0xsports")]
 
-    groups = _build_groups(events, wallets, {}, markets)
+    groups = _build_groups(events, wallets, {}, {}, markets)
     assert groups == []
+
+
+def test_market_maker_multiplier_down_weights_contributor():
+    """A wallet flagged as a market maker (multiplier < 1.0) has its
+    category score scaled down before it ever reaches the consensus
+    engine - the down-weighting docs/CONSENSUS_V2_DESIGN.md-adjacent
+    market-maker work is supposed to apply.
+    """
+    wallets = {1: _wallet(1, "0xa")}
+    markets = {"0xsports": _market("0xsports", "Sports")}
+    category_scores = {(1, "Sports"): Decimal("0.8")}
+    market_maker_multiplier = {1: Decimal("0.2")}  # heavily down-weighted
+    events = [_event(1, "0xsports")]
+
+    groups = _build_groups(events, wallets, category_scores, market_maker_multiplier, markets)
+
+    assert groups[0].events[0].weight == Decimal("0.8") * Decimal("0.2")
+
+
+def test_market_maker_excluded_contributor_has_zero_weight():
+    """Multiplier of 0.0 (the "exclude" mode's effect once a wallet clears
+    the threshold) zeroes the contribution out entirely, regardless of an
+    otherwise-strong category score.
+    """
+    wallets = {1: _wallet(1, "0xa")}
+    markets = {"0xsports": _market("0xsports", "Sports")}
+    category_scores = {(1, "Sports"): Decimal("0.9")}
+    market_maker_multiplier = {1: Decimal("0")}
+    events = [_event(1, "0xsports")]
+
+    groups = _build_groups(events, wallets, category_scores, market_maker_multiplier, markets)
+
+    assert groups[0].events[0].weight == Decimal("0")
+
+
+def test_no_market_maker_score_yet_leaves_weight_unadjusted():
+    """A wallet never scored yet (market_maker_multiplier has no entry for
+    it) defaults to a 1.0 multiplier - no penalty for missing evidence.
+    """
+    wallets = {1: _wallet(1, "0xa")}
+    markets = {"0xsports": _market("0xsports", "Sports")}
+    category_scores = {(1, "Sports"): Decimal("0.8")}
+    events = [_event(1, "0xsports")]
+
+    groups = _build_groups(events, wallets, category_scores, {}, markets)
+
+    assert groups[0].events[0].weight == Decimal("0.8")

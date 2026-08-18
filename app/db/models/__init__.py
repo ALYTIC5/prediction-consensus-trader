@@ -20,7 +20,7 @@ from app.db.models.optimization import (
 from app.db.models.paper import PaperPortfolio, PaperTrade, PaperTradeStatus
 from app.db.models.positions import Position, PositionEventType, PositionHistory
 from app.db.models.risk import RiskDecisionType, RiskEvent
-from app.db.models.scores import TraderScore
+from app.db.models.scores import TraderScore, WalletMarketMakerScore
 from app.db.models.scout import (
     ScoutForwardTrade,
     ScoutStageTransition,
@@ -73,4 +73,5 @@ __all__ = [
     "Wallet",
     "WalletCluster",
     "WalletCrowdedness",
+    "WalletMarketMakerScore",
 ]
