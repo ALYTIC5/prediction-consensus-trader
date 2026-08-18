@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}Consensus V2 - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="page-head">
+  <div class="page-head__title">Consensus V2: Whale-Implied Probability</div>
+  <div class="text-dim micro-label">Runs alongside the count-based consensus strategy, not instead of it - see docs/CONSENSUS_V2_DESIGN.md.</div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Paired Brier score - do our whales beat the market?</span></div>
+  <div class="summary-cards">
+    <div class="summary-card">
+      <span class="micro-label">Mean difference (market − consensus)</span>
+      <span class="summary-card__value {% if paired_brier.mean_difference > 0 %}text-phosphor{% elif paired_brier.mean_difference < 0 %}text-alert{% endif %}">{{ "%.5f"|format(paired_brier.mean_difference) }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">t-statistic</span>
+      <span class="summary-card__value">{% if paired_brier.t_statistic is not none %}{{ "%.2f"|format(paired_brier.t_statistic) }}{% else %}<span class="text-dim">&mdash;</span>{% endif %}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">n (effective n)</span>
+      <span class="summary-card__value">{{ paired_brier.nominal_n }} <span class="text-dim" style="font-size:12px;">({{ paired_brier.effective_n }})</span></span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">Kelly gate</span>
+      <span class="summary-card__value">{% if paired_brier.kelly_gate_passing %}<span class="tag tag--phosphor">Passing</span>{% else %}<span class="tag tag--amber">Not yet</span>{% endif %}</span>
+    </div>
+  </div>
+  {% if paired_brier.nominal_n == 0 %}
+  <p class="empty-state" style="margin-top:var(--space-3);">No markets have resolved under consensus_v2 yet - too early to tell. This is expected right after rollout, not an error.</p>
+  {% elif paired_brier.t_statistic is none %}
+  <p class="text-dim micro-label" style="margin-top:var(--space-3);">Fewer than 2 distinct event clusters resolved so far - no variance estimate possible yet, so no t-statistic. The point estimate above is real but not yet a statistical verdict.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>consensus_prob portfolio P&amp;L</span></div>
+  {% if portfolio_metrics %}
+  <div class="summary-cards">
+    <div class="summary-card">
+      <span class="micro-label">Realised P&amp;L</span>
+      <span class="summary-card__value {% if portfolio_metrics.total_realized_pnl > 0 %}text-phosphor{% elif portfolio_metrics.total_realized_pnl < 0 %}text-alert{% endif %}">{{ "%.4f"|format(portfolio_metrics.total_realized_pnl) }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">Bankroll</span>
+      <span class="summary-card__value">{{ "%.2f"|format(portfolio_metrics.current_bankroll) }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="micro-label">Closed trades</span>
+      <span class="summary-card__value">{{ portfolio_metrics.closed_count }} <span class="text-dim" style="font-size:12px;">(eff. n={{ portfolio_metrics.effective_closed_count }})</span></span>
+    </div>
+  </div>
+  {% else %}
+  <p class="empty-state">No consensus_v2 scans have run yet - the portfolio is created on first scan.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Live signals</span></div>
+  {% if live_signals %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Market</th>
+          <th class="num">P&#7522;consensus</th>
+          <th class="num">P&#7522;market</th>
+          <th class="num">Divergence</th>
+          <th class="num">Confidence</th>
+          <th class="num">Clusters</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in live_signals %}
+        <tr>
+          <td class="text-dim" style="font-size:12px;">{{ s.condition_id[:12] }}&hellip; ({{ s.outcome }})</td>
+          <td class="num">{{ "%.3f"|format(s.p_consensus) }}</td>
+          <td class="num">{{ "%.3f"|format(s.p_market) }}</td>
+          <td class="num {% if s.divergence > 0 %}text-phosphor{% else %}text-alert{% endif %}">{{ "%.3f"|format(s.divergence) }}</td>
+          <td class="num">{{ "%.2f"|format(s.confidence) }}</td>
+          <td class="num">{{ s.n_clusters }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No live signals right now.</p>
+  {% endif %}
+</div>
+
+<div class="detail-grid">
+  <div class="panel">
+    <div class="panel__title"><span>Consensus calibration</span></div>
+    {% if consensus_calibration %}
+    <table class="data-table">
+      <thead><tr><th>Decile</th><th class="num">Predicted</th><th class="num">Realized</th><th class="num">n</th></tr></thead>
+      <tbody>
+        {% for d in consensus_calibration %}
+        <tr><td>{{ d.decile }}</td><td class="num">{{ "%.2f"|format(d.predicted_mean) }}</td><td class="num">{{ "%.2f"|format(d.realized_frequency) }}</td><td class="num">{{ d.n }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No resolved markets yet.</p>
+    {% endif %}
+  </div>
+  <div class="panel">
+    <div class="panel__title"><span>Market calibration (for comparison)</span></div>
+    {% if market_calibration %}
+    <table class="data-table">
+      <thead><tr><th>Decile</th><th class="num">Predicted</th><th class="num">Realized</th><th class="num">n</th></tr></thead>
+      <tbody>
+        {% for d in market_calibration %}
+        <tr><td>{{ d.decile }}</td><td class="num">{{ "%.2f"|format(d.predicted_mean) }}</td><td class="num">{{ "%.2f"|format(d.realized_frequency) }}</td><td class="num">{{ d.n }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No resolved markets yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

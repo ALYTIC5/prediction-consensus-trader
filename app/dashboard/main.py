@@ -515,6 +515,25 @@ def coherence_page(request: Request):
     return templates.TemplateResponse(request, "coherence.html", context)
 
 
+@app.get("/consensus-v2")
+def consensus_v2_page(request: Request):
+    """The Consensus V2 page: live whale-implied probability signals, the
+    paired Brier edge metric (event-clustered), the calibration curve vs.
+    the market's own, and the consensus_prob portfolio's real P&L - see
+    docs/CONSENSUS_V2_DESIGN.md. Read-only.
+    """
+    consensus_calibration, market_calibration = queries.get_calibration_curves()
+    context = {
+        "active_page": "consensus_v2",
+        "live_signals": queries.get_signal_prob_live(),
+        "paired_brier": queries.get_paired_brier_summary(),
+        "consensus_calibration": consensus_calibration,
+        "market_calibration": market_calibration,
+        "portfolio_metrics": queries.get_consensus_v2_portfolio_metrics(),
+    }
+    return templates.TemplateResponse(request, "consensus_v2.html", context)
+
+
 @app.get("/optimization")
 def optimization_page(request: Request):
     """The Optimization page: Phase 6 signal-quality overview - cluster

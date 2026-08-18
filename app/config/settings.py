@@ -170,6 +170,28 @@ class Settings(BaseSettings):
     coherence_max_markets_per_cycle: int = 50
     coherence_starting_bankroll: Decimal = Decimal("100")
 
+    # --- Consensus V2 (app/consensus_v2/) - see docs/CONSENSUS_V2_DESIGN.md ---
+    consensus_prob_scan_interval_seconds: int = 300
+    consensus_prob_max_markets_per_cycle: int = 100
+    # Dominant-position cap - no single cluster's weight (score x
+    # position_usd) exceeds this fraction of the total.
+    consensus_prob_max_cluster_weight_fraction: Decimal = Decimal("0.35")
+    consensus_prob_confidence_n_clusters_target: int = 5
+    consensus_prob_confidence_notional_target: Decimal = Decimal("5000")
+    consensus_prob_max_snapshot_age_seconds: int = 300
+    consensus_prob_min_divergence: Decimal = Decimal("0.05")
+    consensus_prob_min_confidence: Decimal = Decimal("0.4")
+    consensus_prob_fixed_fraction_pct: Decimal = Decimal("0.02")
+    # Fallback used when no live fee_rates snapshot exists yet for a token -
+    # same fallback role as paper_fee_rate_default/coherence_fee_rate_default.
+    consensus_prob_fee_rate_default: Decimal = Decimal("0.05")
+    consensus_prob_starting_bankroll: Decimal = Decimal("100")
+    # Kelly gate (docs/CONSENSUS_V2_DESIGN.md section 3) - effective n is
+    # distinct event clusters (app/optimization/event_clustering.py), not
+    # nominal resolved-market count.
+    consensus_prob_kelly_min_effective_n: int = 30
+    consensus_prob_kelly_min_t_stat: Decimal = Decimal("1.96")
+
     # --- Retention pruning (app/utils/pruning.py, scripts/prune_old_data.py) ---
     # Append-only time-series tables with no natural cap - prices alone
     # grows ~230k rows/day (one row per outcome token per markets-collector
@@ -520,6 +542,14 @@ class Settings(BaseSettings):
     scout_validation_days: int = 14
     scout_min_forward_trades: int = 40
     scout_validation_confirmations: int = 2
+    # Per-cycle cap on horizon/resolution CLV backfill (app/scout/
+    # forward.py's _fill_forward_clv) - each pending row costs one DB
+    # round-trip, and an accumulated backlog (35,802 rows, observed in
+    # production after the unbounded-query bug this cap was added
+    # alongside) would otherwise make a single cycle run long enough to
+    # look like the same hang again. Bounded, so a large backlog drains
+    # over several cycles instead of one.
+    scout_clv_fill_max_per_cycle: int = 2000
 
     # Stage 3: decay monitoring.
     # Point-estimate threshold, not a [0,1]-bounded fraction - CLV is a
@@ -562,6 +592,11 @@ class Settings(BaseSettings):
             "coherence_min_edge",
             "coherence_max_book_depth_fraction",
             "coherence_fee_rate_default",
+            "consensus_prob_max_cluster_weight_fraction",
+            "consensus_prob_min_divergence",
+            "consensus_prob_min_confidence",
+            "consensus_prob_fixed_fraction_pct",
+            "consensus_prob_fee_rate_default",
             "risk_max_position_pct",
             "risk_max_exposure_pct",
             "risk_max_market_exposure_pct",

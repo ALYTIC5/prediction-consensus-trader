@@ -7,6 +7,7 @@ from app.db.models.coherence import (
     CoherenceOpportunity,
     CoherenceOpportunityType,
 )
+from app.db.models.consensus_v2 import SignalProb, SignalProbTrade, SignalProbTradeStatus
 from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
 from app.db.models.markets import FeeRate, Market, MarketHistory, OrderBook, PriceSnapshot
 from app.db.models.optimization import (
@@ -61,6 +62,9 @@ __all__ = [
     "ScoutValidationWindow",
     "Signal",
     "SignalCLV",
+    "SignalProb",
+    "SignalProbTrade",
+    "SignalProbTradeStatus",
     "SignalStatus",
     "TraderCategoryScore",
     "TraderPipeline",

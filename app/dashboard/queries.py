@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.config.adjustable import ADJUSTABLE, AdjustableField, parse_and_validate
 from app.config.effective import get_effective_settings
 from app.config.settings import Settings, get_settings
+from app.consensus_v2.paired_brier import ResolvedRecord, compute_paired_brier, kelly_gate_passes
 from app.db.models import (
     ClusterBanditState,
     CoherenceFill,
@@ -48,6 +49,9 @@ from app.db.models import (
     ScoutStageTransition,
     ScoutValidationWindow,
     Signal,
+    SignalProb,
+    SignalProbTrade,
+    SignalProbTradeStatus,
     SignalStatus,
     TraderPipeline,
     TraderPipelineStage,
@@ -2514,6 +2518,191 @@ def get_coherence_portfolio_metrics() -> PortfolioMetrics | None:
             exit_at=f.exit_at,
         )
         for f in fills
+    ]
+    return compute_portfolio_metrics(
+        trades=trade_data,
+        starting_bankroll=portfolio.starting_bankroll,
+        current_bankroll=portfolio.current_bankroll,
+        min_trades_for_stats=get_settings().paper_min_trades_for_stats,
+    )
+
+
+# --- Consensus V2 page (docs/CONSENSUS_V2_DESIGN.md) ---
+
+
+@dataclass(frozen=True)
+class SignalProbRow:
+    id: int
+    condition_id: str
+    outcome: str
+    p_consensus: Decimal
+    p_market: Decimal
+    divergence: Decimal
+    confidence: Decimal
+    n_clusters: int
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class PairedBrierSummary:
+    mean_difference: Decimal
+    t_statistic: Decimal | None
+    nominal_n: int
+    effective_n: int
+    kelly_gate_passing: bool
+
+
+@dataclass(frozen=True)
+class CalibrationDecileRow:
+    decile: str
+    predicted_mean: Decimal
+    realized_frequency: Decimal
+    n: int
+
+
+def get_signal_prob_live() -> list[SignalProbRow]:
+    """Every signal_prob row from an unresolved market, newest first -
+    the live divergence readings currently driving (or having driven) a
+    consensus_prob entry decision.
+    """
+    with db_session() as session:
+        rows = (
+            session.execute(
+                select(SignalProb)
+                .where(SignalProb.resolved_at.is_(None))
+                .order_by(SignalProb.created_at.desc())
+                .limit(200)
+            )
+            .scalars()
+            .all()
+        )
+    return [
+        SignalProbRow(
+            id=r.id,
+            condition_id=r.condition_id,
+            outcome=r.outcome,
+            p_consensus=r.p_consensus,
+            p_market=r.p_market,
+            divergence=r.divergence,
+            confidence=r.confidence,
+            n_clusters=r.n_clusters,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+def get_paired_brier_summary() -> PairedBrierSummary:
+    """The honest edge metric (docs/CONSENSUS_V2_DESIGN.md section 4) -
+    computed fresh from every resolved signal_prob row, with event-
+    clustered standard errors, same machinery the Kelly gate itself uses.
+    """
+    settings = get_settings()
+    with db_session() as session:
+        rows = session.execute(
+            select(
+                SignalProb.condition_id,
+                Market.event_cluster_id,
+                SignalProb.p_consensus,
+                SignalProb.p_market,
+                SignalProb.outcome_value,
+            )
+            .join(Market, Market.condition_id == SignalProb.condition_id, isouter=True)
+            .where(SignalProb.resolved_at.is_not(None))
+        ).all()
+    records = [
+        ResolvedRecord(
+            condition_id=r.condition_id,
+            event_cluster_id=r.event_cluster_id,
+            p_consensus=r.p_consensus,
+            p_market=r.p_market,
+            outcome=r.outcome_value,
+        )
+        for r in rows
+    ]
+    result = compute_paired_brier(records)
+    gate = kelly_gate_passes(
+        result,
+        settings.consensus_prob_kelly_min_effective_n,
+        settings.consensus_prob_kelly_min_t_stat,
+    )
+    return PairedBrierSummary(
+        mean_difference=result.mean_difference,
+        t_statistic=result.t_statistic,
+        nominal_n=result.nominal_n,
+        effective_n=result.effective_n,
+        kelly_gate_passing=gate,
+    )
+
+
+def _calibration_deciles(rows: list, predicted_attr: str) -> list[CalibrationDecileRow]:
+    buckets: dict[int, list[tuple[Decimal, Decimal]]] = {}
+    for r in rows:
+        predicted = getattr(r, predicted_attr)
+        decile = min(9, int(predicted * 10))
+        buckets.setdefault(decile, []).append((predicted, r.outcome_value))
+    results = []
+    for decile in sorted(buckets):
+        pairs = buckets[decile]
+        n = len(pairs)
+        predicted_mean = sum((p for p, _ in pairs), Decimal(0)) / Decimal(n)
+        realized_frequency = sum((o for _, o in pairs), Decimal(0)) / Decimal(n)
+        results.append(
+            CalibrationDecileRow(
+                decile=f"{decile * 10}-{decile * 10 + 10}%",
+                predicted_mean=predicted_mean,
+                realized_frequency=realized_frequency,
+                n=n,
+            )
+        )
+    return results
+
+
+def get_calibration_curves() -> tuple[list[CalibrationDecileRow], list[CalibrationDecileRow]]:
+    """P_consensus's own calibration vs. the market's, same deciles -
+    docs/CONSENSUS_V2_DESIGN.md section 5: closer to the diagonal than the
+    market's own curve is the visual form of a positive paired Brier
+    result.
+    """
+    with db_session() as session:
+        rows = session.execute(
+            select(SignalProb.p_consensus, SignalProb.p_market, SignalProb.outcome_value).where(
+                SignalProb.resolved_at.is_not(None)
+            )
+        ).all()
+    return _calibration_deciles(rows, "p_consensus"), _calibration_deciles(rows, "p_market")
+
+
+def get_consensus_v2_portfolio() -> PaperPortfolio | None:
+    with db_session() as session:
+        return session.execute(
+            select(PaperPortfolio).where(PaperPortfolio.name == "consensus_prob")
+        ).scalar_one_or_none()
+
+
+def get_consensus_v2_portfolio_metrics() -> PortfolioMetrics | None:
+    portfolio = get_consensus_v2_portfolio()
+    if portfolio is None:
+        return None
+    with db_session() as session:
+        trades = (
+            session.execute(
+                select(SignalProbTrade).where(SignalProbTrade.portfolio_id == portfolio.id)
+            )
+            .scalars()
+            .all()
+        )
+    trade_data = [
+        TradeData(
+            status="CLOSED" if t.status == SignalProbTradeStatus.CLOSED else "OPEN",
+            condition_id=t.condition_id,
+            entry_price=t.entry_price,
+            size=t.size,
+            realized_pnl=t.realized_pnl,
+            unrealized_pnl=Decimal("0") if t.status == SignalProbTradeStatus.OPEN else None,
+            exit_at=t.exit_at,
+        )
+        for t in trades
     ]
     return compute_portfolio_metrics(
         trades=trade_data,

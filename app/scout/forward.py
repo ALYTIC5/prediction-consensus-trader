@@ -57,6 +57,7 @@ class ForwardConfig:
     decay_threshold: Decimal
     decay_windows: int
     resolution_price_threshold: Decimal
+    clv_fill_max_per_cycle: int
     confidence_z: Decimal = _CONFIDENCE_Z
 
     @classmethod
@@ -68,6 +69,7 @@ class ForwardConfig:
             validation_confirmations=settings.scout_validation_confirmations,
             decay_threshold=settings.scout_decay_threshold,
             decay_windows=settings.scout_decay_windows,
+            clv_fill_max_per_cycle=settings.scout_clv_fill_max_per_cycle,
             # Not a scout_*-namespaced setting (design flag 8 is about the
             # Scout's own behavioral tunables, not about facts of the
             # market data itself) - app/optimization/clv.py's own
@@ -300,13 +302,23 @@ def _fill_forward_clv(session: Session, config: ForwardConfig, now: datetime) ->
     """
     horizon_filled = resolution_filled = 0
 
+    # Capped per cycle - as of this fix, production had a 35,802-row
+    # horizon-fill backlog accumulated under the old unbounded query (see
+    # this fix's commit). Even correctly SQL-filtered, a one-time backlog
+    # that size still means one DB round-trip per row
+    # (_nearest_price_at_or_after below) - capping keeps any single cycle
+    # bounded and lets the backlog drain over several cycles instead of
+    # one that runs long enough to look like the same hang again.
     horizon_cutoff = now - timedelta(hours=config.clv_horizon_hours)
     horizon_pending = (
         session.execute(
-            select(ScoutForwardTrade).where(
+            select(ScoutForwardTrade)
+            .where(
                 ScoutForwardTrade.price_at_horizon.is_(None),
                 ScoutForwardTrade.entry_at <= horizon_cutoff,
             )
+            .order_by(ScoutForwardTrade.entry_at.asc())
+            .limit(config.clv_fill_max_per_cycle)
         )
         .scalars()
         .all()
@@ -332,6 +344,7 @@ def _fill_forward_clv(session: Session, config: ForwardConfig, now: datetime) ->
                 ScoutForwardTrade.price_at_resolution.is_(None),
                 Market.closed.is_(True),
             )
+            .limit(config.clv_fill_max_per_cycle)
         )
         .scalars()
         .all()

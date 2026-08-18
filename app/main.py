@@ -13,6 +13,7 @@ from app.collectors.orderbook import collect as collect_orderbook
 from app.collectors.polymarket import PolymarketClient
 from app.collectors.positions import collect as collect_positions
 from app.config.settings import get_settings
+from app.consensus_v2.scan import run_consensus_v2_scan
 from app.optimization.bandit import run_bandit_job
 from app.optimization.clustering import run_clustering_job
 from app.optimization.clv import run_clv_job
@@ -98,6 +99,11 @@ async def _run() -> None:
                 name="coherence",
                 run=lambda: run_coherence_scan(client, settings),
                 interval_seconds=settings.coherence_scan_interval_seconds,
+            ),
+            PeriodicJob(
+                name="consensus_v2",
+                run=lambda: run_consensus_v2_scan(client, settings),
+                interval_seconds=settings.consensus_prob_scan_interval_seconds,
             ),
             PeriodicJob(
                 name="event_clustering",
