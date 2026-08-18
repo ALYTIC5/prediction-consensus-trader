@@ -96,7 +96,7 @@
         <tr class="clickable-row" data-href="/paper/{{ comp.portfolio_id }}">
           <td>
             <a href="/paper/{{ comp.portfolio_id }}" class="strategy-link">{{ comp.name }}</a>
-            {% if comp.portfolio_id in params_by_portfolio_id %}{{ info_tip(strategy_snapshot(params_by_portfolio_id[comp.portfolio_id]), direction="down") }}{% endif %}
+            {% if params_by_portfolio_id.get(comp.portfolio_id) %}{{ info_tip(strategy_snapshot(params_by_portfolio_id[comp.portfolio_id]), direction="down") }}{% endif %}
           </td>
           <td class="num {% if comp.roi_pct is not none and comp.roi_pct > 0 %}text-phosphor{% elif comp.roi_pct is not none and comp.roi_pct < 0 %}text-alert{% endif %}">
             {% if comp.roi_pct is not none %}{{ "%.2f"|format(comp.roi_pct * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}

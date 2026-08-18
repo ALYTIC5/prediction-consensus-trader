@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config.effective import get_effective_settings
@@ -288,56 +288,63 @@ def _fill_forward_clv(session: Session, config: ForwardConfig, now: datetime) ->
     uses for signal_clv - horizon once SCOUT_CLV_HORIZON_HOURS has elapsed
     and a price exists there, resolution once the market closes and
     resolves unambiguously.
+
+    Both passes filter in SQL, not in Python over an unconditionally
+    fetched "everything still missing either field" set - a market that
+    never resolves promptly (the common case; most markets stay open for
+    weeks) used to leave its forward trade in that set on EVERY cycle
+    forever, so the working set only ever grew. That's the same unbounded-
+    worklist shape that hung app/collectors/markets.py earlier - see that
+    fix's commit for the identical lesson: push the filter that actually
+    bounds the set into the query, don't carry the backlog in Python.
     """
-    pending = (
+    horizon_filled = resolution_filled = 0
+
+    horizon_cutoff = now - timedelta(hours=config.clv_horizon_hours)
+    horizon_pending = (
         session.execute(
             select(ScoutForwardTrade).where(
-                or_(
-                    ScoutForwardTrade.price_at_horizon.is_(None),
-                    ScoutForwardTrade.price_at_resolution.is_(None),
-                )
+                ScoutForwardTrade.price_at_horizon.is_(None),
+                ScoutForwardTrade.entry_at <= horizon_cutoff,
             )
         )
         .scalars()
         .all()
     )
-    if not pending:
-        return 0, 0
+    for row in horizon_pending:
+        horizon_at = row.entry_at + timedelta(hours=config.clv_horizon_hours)
+        price = _nearest_price_at_or_after(session, row.condition_id, row.asset, horizon_at)
+        clv = resolve_horizon_clv(row.entry_price, price)
+        if clv is not None:
+            row.price_at_horizon = price
+            row.clv_horizon = clv
+            row.computed_at = now
+            horizon_filled += 1
 
-    condition_ids = {row.condition_id for row in pending}
-    markets_by_condition = {
-        market.condition_id: market
-        for market in session.execute(
-            select(Market).where(Market.condition_id.in_(condition_ids))
-        ).scalars()
-    }
-
-    horizon_filled = resolution_filled = 0
-    for row in pending:
-        if row.price_at_horizon is None:
-            horizon_at = row.entry_at + timedelta(hours=config.clv_horizon_hours)
-            if now >= horizon_at:
-                price = _nearest_price_at_or_after(session, row.condition_id, row.asset, horizon_at)
-                clv = resolve_horizon_clv(row.entry_price, price)
-                if clv is not None:
-                    row.price_at_horizon = price
-                    row.clv_horizon = clv
-                    row.computed_at = now
-                    horizon_filled += 1
-
-        if row.price_at_resolution is None:
-            market = markets_by_condition.get(row.condition_id)
-            if market is not None and market.closed:
-                latest = _latest_price(session, row.condition_id, row.asset)
-                resolution = detect_resolution(
-                    market.closed, latest, config.resolution_price_threshold
-                )
-                result = resolve_resolution_clv(row.entry_price, resolution)
-                if result is not None:
-                    row.price_at_resolution = result.price_at_resolution
-                    row.clv_resolution = result.clv_resolution
-                    row.computed_at = now
-                    resolution_filled += 1
+    # Only trades whose market has ACTUALLY closed - a still-open market's
+    # trade is excluded by this join, not just skipped in Python, so it
+    # never re-enters the working set until it's genuinely relevant.
+    resolution_pending = (
+        session.execute(
+            select(ScoutForwardTrade)
+            .join(Market, Market.condition_id == ScoutForwardTrade.condition_id)
+            .where(
+                ScoutForwardTrade.price_at_resolution.is_(None),
+                Market.closed.is_(True),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in resolution_pending:
+        latest = _latest_price(session, row.condition_id, row.asset)
+        resolution = detect_resolution(True, latest, config.resolution_price_threshold)
+        result = resolve_resolution_clv(row.entry_price, resolution)
+        if result is not None:
+            row.price_at_resolution = result.price_at_resolution
+            row.clv_resolution = result.clv_resolution
+            row.computed_at = now
+            resolution_filled += 1
 
     return horizon_filled, resolution_filled
 

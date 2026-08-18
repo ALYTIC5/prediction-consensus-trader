@@ -89,6 +89,7 @@
 </div>
 
 {% set p = portfolio.params %}
+{% if p %}
 <div class="panel">
   <div class="panel__title"><span>Strategy Profile</span></div>
   <p style="margin-bottom:0; line-height:1.6;">
@@ -120,6 +121,7 @@
     or after <b>{{ p.paper_exit_on_signal_expiry_hours }}h</b> if the signal expires first.
   </p>
 </div>
+{% endif %}
 
 <div class="detail-grid">
   <div class="panel detail-grid__chart">
