@@ -10,6 +10,7 @@ from app.collectors.schemas import (
     ClobMarketState,
     FeeRateResponse,
     GammaMarket,
+    GammaMarketResolution,
     LeaderboardEntry,
     OrderBookResponse,
     PositionEntry,
@@ -139,6 +140,22 @@ class PolymarketClient:
                 return None
             raise
         return Decimal(FeeRateResponse.model_validate(data).base_fee) / Decimal(10000)
+
+    async def get_market_by_id(self, gamma_id: str) -> GammaMarketResolution | None:
+        """Authoritative single-market lookup (GET /markets/{id}, Gamma
+        API) - unlike get_markets_by_condition_ids' bulk filtered query,
+        this path-based route does not drop a market once resolved
+        (verified live 2026-08-19, see docs/API_REFERENCE.md and
+        GammaMarketResolution's docstring). None means Gamma has never
+        heard of this id (404) - never raised as an error.
+        """
+        try:
+            data = await self._http.get_json(f"{self._settings.gamma_api_base}/markets/{gamma_id}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        return GammaMarketResolution.model_validate(data)
 
     async def get_markets_by_condition_ids(self, condition_ids: Sequence[str]) -> list[GammaMarket]:
         """Fetch markets by condition ID, 20 per request, as repeated query params."""

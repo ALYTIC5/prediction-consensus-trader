@@ -9,7 +9,14 @@ from app.db.models.coherence import (
 )
 from app.db.models.consensus_v2 import SignalProb, SignalProbTrade, SignalProbTradeStatus
 from app.db.models.dashboard import ConsensusRun, OverrideAudit, RuntimeOverride
-from app.db.models.markets import FeeRate, Market, MarketHistory, OrderBook, PriceSnapshot
+from app.db.models.markets import (
+    FeeRate,
+    Market,
+    MarketHistory,
+    MarketResolution,
+    OrderBook,
+    PriceSnapshot,
+)
 from app.db.models.optimization import (
     ClusterBanditState,
     SignalCLV,
@@ -45,6 +52,7 @@ __all__ = [
     "LeaderboardSnapshot",
     "Market",
     "MarketHistory",
+    "MarketResolution",
     "OrderBook",
     "OverrideAudit",
     "PaperPortfolio",

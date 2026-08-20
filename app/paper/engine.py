@@ -25,6 +25,7 @@ from app.config.settings import Settings
 from app.db.models import (
     FeeRate,
     Market,
+    MarketResolution,
     OrderBook,
     PaperPortfolio,
     PaperTrade,
@@ -475,6 +476,31 @@ def _latest_price(session: Session, condition_id: str, asset: str) -> Decimal | 
         .order_by(PriceSnapshot.captured_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+
+
+def _resolution_price(
+    session: Session, market: Market | None, condition_id: str, asset: str
+) -> Decimal | None:
+    """The true settlement price for one outcome token, preferring
+    app/collectors/resolutions.py's authoritative market_resolutions row
+    over the last live price tick (_latest_price) - a resolved market stops
+    appearing in the ordinary markets-collector's Gamma sync (see
+    docs/API_REFERENCE.md), so its last PriceSnapshot is frequently stale
+    or simply absent, which is exactly the starvation bug this backfill
+    exists to fix. Falls back to _latest_price when no resolution row
+    exists yet (e.g. the resolutions collector hasn't reached this market
+    on its own bounded, rotating schedule) - same "nothing better yet"
+    convention the rest of this module already uses.
+    """
+    resolution = session.get(MarketResolution, condition_id)
+    if resolution is None:
+        return _latest_price(session, condition_id, asset)
+    if market is None or asset not in market.clob_token_ids:
+        return _latest_price(session, condition_id, asset)
+    index = market.clob_token_ids.index(asset)
+    if index >= len(resolution.outcome_prices):
+        return _latest_price(session, condition_id, asset)
+    return Decimal(resolution.outcome_prices[index])
 
 
 def _load_snapshots(
@@ -1075,7 +1101,7 @@ def _run_exits(
         ).scalar_one_or_none()
         closed = market.closed if market is not None else False
         resolution_price = (
-            _latest_price(session, trade.condition_id, trade.asset) if closed else None
+            _resolution_price(session, market, trade.condition_id, trade.asset) if closed else None
         )
         resolution = detect_resolution(closed, resolution_price, config.resolution_price_threshold)
 

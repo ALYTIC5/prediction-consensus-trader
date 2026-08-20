@@ -174,6 +174,25 @@ class GammaMarket(PolymarketResponseModel):
             return []
 
 
+class GammaMarketResolution(GammaMarket):
+    """One market row from GET /markets/{id} (Gamma API, path-based single-
+    resource lookup, id = Market.gamma_id) - verified live 2026-08-19 (see
+    docs/API_REFERENCE.md). Same shape as GammaMarket plus the settlement
+    fields only this route carries.
+
+    This is the authoritative resolution source: the condition_ids/id-
+    filtered bulk /markets query (get_markets_by_condition_ids) silently
+    drops a market from its response once resolved - confirmed live to
+    happen even for a single-value filter, not just multi-value ones (see
+    docs/API_REFERENCE.md) - but this single-id path route does not.
+    """
+
+    closed_time: str | None = Field(default=None, alias="closedTime")
+    uma_resolution_status: str | None = Field(default=None, alias="umaResolutionStatus")
+    resolved_by: str | None = Field(default=None, alias="resolvedBy")
+    automatically_resolved: bool | None = Field(default=None, alias="automaticallyResolved")
+
+
 class OrderBookLevel(PolymarketResponseModel):
     """One price level from GET /book (CLOB API) - see docs/API_REFERENCE.md.
 

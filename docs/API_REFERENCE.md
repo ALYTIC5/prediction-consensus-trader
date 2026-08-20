@@ -123,17 +123,71 @@ documented parameters (e.g. `closed=false`) and filter the returned list
 client-side on the `active` field after parsing. Never send an undocumented
 query parameter — see CLAUDE.md working agreement.
 
-### Quirk — archived markets silently vanish from `condition_ids`-filtered responses
+### Quirk — archived markets silently vanish from *every* filtered `GET /markets` response, not just `condition_ids`
 
-Confirmed live (2026-08-13/16): a market that has fully resolved and been
-archived is not returned with `closed: true` when queried by
-`condition_ids=<its own condition_id>` — it is simply absent from the
-response array, as if the id didn't exist. Root-caused as the reason
-`app/collectors/markets.py`'s "not yet closed" work list only ever grows:
-a resolved market's `closed` flag in our DB never flips because Gamma stops
-telling us about it at all. `GET https://clob.polymarket.com/markets/{id}`
-(below) still reports `closed: true` correctly for the same market and is
-used as the fallback source of truth when this happens.
+Confirmed live (2026-08-13/16, re-confirmed and widened 2026-08-19): a
+market that has fully resolved and been archived is not returned with
+`closed: true` when queried through the filtered list endpoint — it is
+simply absent from the response array, as if the id didn't exist. Root-
+caused as the reason `app/collectors/markets.py`'s "not yet closed" work
+list only ever grows: a resolved market's `closed` flag in our DB never
+flips because Gamma stops telling us about it at all.
+
+2026-08-19 re-verification found the bug is broader than first documented:
+it is **not specific to the `condition_ids` param, and not specific to
+multi-value filters**. `GET /markets?condition_ids=<one resolved id>` and
+`GET /markets?id=<one resolved id>` — a single documented query param, one
+value — both returned `0 rows` for a market independently confirmed
+resolved (via `GET /markets/{id}`, below). Any filtered list query on this
+endpoint appears to omit archived markets outright, regardless of which
+param or how many values.
+
+`GET https://clob.polymarket.com/markets/{id}` (below) still reports
+`closed: true` correctly for the same market and remains in use as
+`app/collectors/markets.py`'s fallback for the live `active`/`closed`/
+`accepting_orders` state. For the market's actual **settlement**
+(winning outcome, resolution timestamp), the authoritative source is
+Gamma's `GET /markets/{id}` path lookup — see the new section below —
+consumed by `app/collectors/resolutions.py`, not the CLOB fallback (which
+carries no winning-outcome field, only `active`/`closed`/`accepting_orders`).
+
+### Gamma API — `GET https://gamma-api.polymarket.com/markets/{id}` — authoritative resolution source
+
+Verified live 2026-08-19. This is a **path-based single-resource lookup**
+(`id` = `Market.gamma_id`, Gamma's own numeric market id — not
+`condition_id`), documented at
+`docs.polymarket.com/api-reference/markets/get-market-by-id`, distinct from
+the filtered list endpoint above (`GET /markets?...`). Unlike that filtered
+endpoint, this route does **not** drop a market once it's resolved/archived
+— confirmed by fetching the same condition_ids that returned 0 rows from
+every filtered-list variant above and getting a full, correct object back
+from this route every time.
+
+Same response shape as a `GET /markets` list row, plus fields the filtered
+list never returns at all:
+
+| Field | Type | Notes |
+|---|---|---|
+| `closed` | boolean | `true` once settled |
+| `closedTime` | string (date-time) | resolution timestamp — format observed as `"2026-07-30 20:55:30+00"` (space-separated, short UTC offset); `Python 3.12`'s `datetime.fromisoformat` parses this directly, no preprocessing needed |
+| `umaResolutionStatus` | string | observed values: `"resolved"` (confirmed final settlement — the only value this project treats as authoritative), `"proposed"` (settlement proposed but not yet finalized — treated as ambiguous, left open) |
+| `outcomePrices` | string (JSON-encoded array) | resolved vector, e.g. `["0", "1"]` — same JSON-encoded-string quirk as the list endpoint (see above); winning outcome is whichever index equals exactly `"1"`. A market that resolves with no single winner (e.g. a documented "if the game is canceled, resolve 50-50" rule) has no `"1"` entry at all — `["0.5", "0.5"]` observed nowhere yet but explicitly provided for in the rules text of live markets, so `app/collectors/resolutions.py` treats a missing single-winner as a valid resolution, not an error |
+| `resolvedBy` | string | present on resolved markets, not further parsed by this project |
+| `automaticallyResolved` | boolean | present on resolved markets, not further parsed by this project |
+
+`app/collectors/resolutions.py` is the only consumer, via
+`PolymarketClient.get_market_by_id`. A market is only ever recorded as
+resolved when `closed=true` **and** `umaResolutionStatus == "resolved"` —
+`closed=true` alone (e.g. mid-dispute) is treated as ambiguous and left
+open rather than guessed.
+
+On-chain/subgraph route: not evaluated further once the above was
+confirmed sufficient and already documented/live-verified — Gamma's single-
+id lookup gives every field this project needs (settlement, winning
+outcome, resolution timestamp) with no new infrastructure, consistent with
+this project's "no new API surface unless the documented ones can't do the
+job" convention (see `app/collectors/categories.py`'s docstring for the
+same reasoning applied elsewhere).
 
 ## Rate limits (api-reference/rate-limits)
 

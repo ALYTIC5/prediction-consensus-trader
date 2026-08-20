@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     # fallback path, conservative on purpose until watched in production.
     markets_clob_fallback_max_per_cycle: int = 500
 
+    # --- Resolution backfill (app/collectors/resolutions.py) ---
+    # For every market past end_date and not yet recorded in
+    # market_resolutions, fetches authoritative settlement via Gamma's
+    # single-market-by-id route (the only one that doesn't drop a resolved
+    # market - see docs/API_REFERENCE.md). Separate cadence/cap from the
+    # markets collector above: this walks the (much larger) backlog of
+    # already-expired markets, not the live "still open" pool.
+    resolutions_interval_seconds: int = 300
+    resolutions_max_per_cycle: int = 2000
+
     # --- Order book snapshots (app/collectors/orderbook.py) ---
     # A brand-new API surface (docs/API_REFERENCE.md's /book entry, verified
     # 2026-08-14) with no documented rate limit - conservative on purpose
@@ -689,6 +699,8 @@ class Settings(BaseSettings):
             "scout_validation_confirmations",
             "scout_decay_windows",
             "scout_decay_check_interval_hours",
+            "resolutions_interval_seconds",
+            "resolutions_max_per_cycle",
         )
         for name in positive_fields:
             value = getattr(self, name)
