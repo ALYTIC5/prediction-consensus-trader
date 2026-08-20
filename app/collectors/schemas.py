@@ -221,6 +221,17 @@ class OrderBookResponse(PolymarketResponseModel):
     neg_risk: bool | None = None
     last_trade_price: Decimal | None = None
 
+    @field_validator("last_trade_price", mode="before")
+    @classmethod
+    def _coerce_last_trade_price(cls, value: Any) -> Any:
+        """Docs/API_REFERENCE.md: a known upstream quirk (py-clob-client#180)
+        returns "" here for an illiquid/untraded book instead of omitting
+        the field - "" isn't a valid Decimal, so it must become None here.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class ClobMarketState(PolymarketResponseModel):
     """One row from GET /markets/{condition_id} (CLOB API) - verified live

@@ -198,6 +198,33 @@ async def test_get_book_parses_bids_and_asks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_book_coerces_empty_last_trade_price_to_none() -> None:
+    """py-clob-client#180: /book returns "" for last_trade_price on an
+    untraded/illiquid book instead of omitting the field - "" isn't a valid
+    Decimal, and this must not raise (see docs/API_REFERENCE.md).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = {
+            "market": "0xcond",
+            "asset_id": "999",
+            "bids": [],
+            "asks": [{"price": "0.60", "size": "80"}],
+            "last_trade_price": "",
+        }
+        return httpx.Response(200, json=body)
+
+    client, http_client = _client_for(handler)
+    try:
+        book = await client.get_book("999")
+    finally:
+        await http_client.aclose()
+
+    assert book is not None
+    assert book.last_trade_price is None
+
+
+@pytest.mark.asyncio
 async def test_get_book_returns_none_on_404() -> None:
     """No orderbook for this token (illiquid/inactive market) - an
     expected, non-retryable outcome, never raised as an error.
