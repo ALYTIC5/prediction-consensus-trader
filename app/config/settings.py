@@ -109,11 +109,21 @@ class Settings(BaseSettings):
     # shrinks when a market's closed flag actually flips) and the job's own
     # runtime grows past markets_interval_seconds, permanently wedging
     # /healthz as degraded - the exact failure this cap exists to prevent.
-    # Open positions are never subject to this cap (see
-    # app/collectors/markets.py's _get_work_list); only the "not yet closed"
-    # pool is capped and rotated oldest-synced-first so every market
-    # eventually gets a turn.
+    # Both the open-positions set and the "not yet closed" backlog pool
+    # share this one cap (see app/collectors/markets.py's _get_work_list).
     markets_max_condition_ids_per_cycle: int = 4000
+    # Slots reserved for the "not yet closed, not currently held" backlog
+    # pool every cycle, taken off the top before open positions get the
+    # rest. Without this, open positions (observed over 80,000 in
+    # production, and NOT itself rotated - see _get_work_list's docstring)
+    # permanently exhaust markets_max_condition_ids_per_cycle on their own,
+    # leaving remaining_budget at 0 forever - confirmed live: markets never
+    # held by a tracked wallet's position went 5+ days without a single
+    # sync, including some of the highest-liquidity markets on the platform.
+    # This guarantees the backlog pool "eventually gets a turn" the way the
+    # cap above was always meant to, regardless of how large the positions
+    # set grows.
+    markets_backlog_min_per_cycle: int = 1000
     # Per-cycle cap on CLOB fallback lookups (see get_market_state) for
     # condition_ids Gamma silently dropped from its response - a brand-new
     # fallback path, conservative on purpose until watched in production.

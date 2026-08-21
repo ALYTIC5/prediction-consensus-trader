@@ -29,7 +29,9 @@ async def collect(client: PolymarketClient, settings: Settings) -> None:
     being left to sync forever as "not yet closed".
     """
     condition_ids = await asyncio.to_thread(
-        _get_work_list, settings.markets_max_condition_ids_per_cycle
+        _get_work_list,
+        settings.markets_max_condition_ids_per_cycle,
+        settings.markets_backlog_min_per_cycle,
     )
     if not condition_ids:
         logger.info("markets: nothing to sync (no open positions or open markets)")
@@ -56,22 +58,28 @@ async def collect(client: PolymarketClient, settings: Settings) -> None:
     )
 
 
-def _get_work_list(max_condition_ids: int) -> list[str]:
+def _get_work_list(max_condition_ids: int, backlog_min: int) -> list[str]:
     """Every condition_id we still care about, bounded to max_condition_ids.
 
     Derived from the DB, not a config list: every market held in an open
     Position whose underlying market isn't already known to be closed (so
     we keep pricing what our tracked wallets are actually exposed to),
-    capped at max_condition_ids same as the market pool below - a wallet
-    not bothering to redeem a resolved position is real and common enough
-    that this set has been observed over 80,000 entries in production, so
-    it cannot be left uncapped either. Filled up to the remaining budget
-    with markets we already know about that aren't closed yet,
-    oldest-synced-first so that backlog rotates through instead of
-    starving markets past the front of the list.
+    filled up to the remaining budget with markets we already know about
+    that aren't closed yet, oldest-synced-first so that backlog rotates
+    through instead of starving markets past the front of the list.
 
-    Two bugs already caught here, both from earlier versions of this
-    function, worth keeping in mind for any future edit:
+    open_position_ids is capped at (max_condition_ids - backlog_min), NOT
+    max_condition_ids - a wallet not bothering to redeem a resolved
+    position is real and common enough that this set has been observed
+    over 80,000 entries in production, and without reserving backlog_min
+    off the top for the "not currently held" pool first, that set alone
+    permanently exhausts the entire per-cycle budget (remaining_budget
+    pins to 0 forever) - confirmed live: markets never held by a tracked
+    wallet's position, including some of the platform's highest-liquidity
+    markets, went 5+ days without a single sync before this reservation
+    existed.
+
+    Three bugs already caught here, worth keeping in mind for any future edit:
     - The excluded-closed-markets filter is a subquery, never a Python list
       passed to not_in() - open positions routinely exceed Postgres's
       65535 bind-parameter limit, and a literal-list not_in() blew that
@@ -87,9 +95,14 @@ def _get_work_list(max_condition_ids: int) -> list[str]:
       (Position.condition_id is genuinely non-unique - two outcome tokens
       per market - so DISTINCT stays, and rotation-fairness is sacrificed
       there in favour of a query that actually runs).
+    - backlog_min reservation (this edit): see the paragraph above - the
+      open-positions query used to be capped at the FULL max_condition_ids,
+      which meant it alone could consume the entire cycle budget and starve
+      the backlog pool to zero indefinitely.
     """
     with db_session() as session:
         closed_condition_ids = select(Market.condition_id).where(Market.closed.is_(True))
+        positions_budget = max(max_condition_ids - backlog_min, 0)
         open_position_ids = list(
             session.execute(
                 select(Position.condition_id)
@@ -98,7 +111,7 @@ def _get_work_list(max_condition_ids: int) -> list[str]:
                     Position.is_open.is_(True),
                     Position.condition_id.not_in(closed_condition_ids),
                 )
-                .limit(max_condition_ids)
+                .limit(positions_budget)
             ).scalars()
         )
         remaining_budget = max(max_condition_ids - len(open_position_ids), 0)
