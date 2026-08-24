@@ -666,6 +666,35 @@ def scout_wallet_detail_page(request: Request, wallet_id: int):
     return templates.TemplateResponse(request, "scout_wallet_detail.html", context)
 
 
+# --- Niche discovery (app/discovery/*.py) ---
+
+
+@app.get("/discovery")
+def discovery_page(request: Request, niche: str = ""):
+    """Niche-aware discovery: coverage-first (how much of the resolved-
+    market universe the walk has actually covered, shown before any
+    per-niche count - the same statistical-honesty framing every other
+    thin-sample page in this console already applies), then the per-niche
+    summary table, then a clicked niche's wallet drill-down.
+    """
+    settings = get_settings()
+    summary = queries.get_discovery_niche_summary()
+    selected_niche = niche if niche in {row.niche for row in summary} else ""
+    context = {
+        "active_page": "discovery",
+        "environment": settings.environment,
+        "coverage": queries.get_discovery_coverage(),
+        "niche_summary": summary,
+        "selected_niche": selected_niche,
+        "niche_wallets": queries.get_discovery_niche_wallets(selected_niche)
+        if selected_niche
+        else None,
+        "discovery_min_trades": settings.discovery_min_trades,
+        "discovery_min_wilson_winrate": settings.discovery_min_wilson_winrate,
+    }
+    return templates.TemplateResponse(request, "discovery.html", context)
+
+
 # --- Paper trading pages ---
 
 

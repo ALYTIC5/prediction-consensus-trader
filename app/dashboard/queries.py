@@ -33,10 +33,17 @@ from app.db.models import (
     CoherenceFillStatus,
     CoherenceOpportunity,
     ConsensusRun,
+    DiscoveryMarketNiche,
+    DiscoverySweepCheckpoint,
     JobHeartbeat,
     LeaderboardSnapshot,
     Market,
     MarketHistory,
+    MarketResolution,
+    NicheTradeGrade,
+    NicheTraderPipeline,
+    NicheTraderPipelineStage,
+    NicheWalletStat,
     OverrideAudit,
     PaperPortfolio,
     PaperTrade,
@@ -2792,3 +2799,208 @@ def get_consensus_v2_portfolio_metrics() -> PortfolioMetrics | None:
         current_bankroll=portfolio.current_bankroll,
         min_trades_for_stats=get_settings().paper_min_trades_for_stats,
     )
+
+
+# --- Niche discovery (app/discovery/*.py) ---
+
+DISCOVERY_PIPELINE_STAGES = ("CANDIDATE", "WATCHLIST", "VALIDATED", "DECAYING")
+
+
+@dataclass(frozen=True)
+class DiscoveryCoverage:
+    """Where the market-walk actually is, in plain numbers - shown at the
+    top of the Discovery page so "these candidates are real" is never
+    implied before coverage is high enough to trust them (the whole reason
+    this is a separate panel, not folded silently into the niche table).
+    """
+
+    resolved_markets_total: int
+    markets_tagged: int
+    trades_graded: int
+    wallet_niche_pairs: int
+    coverage_pct: Decimal
+
+
+def get_discovery_coverage() -> DiscoveryCoverage:
+    with db_session() as session:
+        resolved_total = session.execute(
+            select(func.count())
+            .select_from(Market)
+            .join(MarketResolution, MarketResolution.condition_id == Market.condition_id)
+        ).scalar_one()
+        markets_tagged = session.execute(
+            select(func.count()).select_from(DiscoveryMarketNiche)
+        ).scalar_one()
+        trades_graded = session.execute(
+            select(func.count()).select_from(NicheTradeGrade)
+        ).scalar_one()
+        wallet_niche_pairs = session.execute(
+            select(func.count()).select_from(NicheWalletStat)
+        ).scalar_one()
+
+    coverage_pct = (
+        (Decimal(markets_tagged) / Decimal(resolved_total) * 100)
+        if resolved_total > 0
+        else Decimal(0)
+    )
+    return DiscoveryCoverage(
+        resolved_markets_total=resolved_total,
+        markets_tagged=markets_tagged,
+        trades_graded=trades_graded,
+        wallet_niche_pairs=wallet_niche_pairs,
+        coverage_pct=coverage_pct,
+    )
+
+
+@dataclass(frozen=True)
+class NicheSummaryRow:
+    """One niche's row in the Discovery page's overview table."""
+
+    niche: str
+    markets_tagged: int
+    candidates: int
+    watchlist: int
+    validated: int
+    median_resolved_n: Decimal | None
+
+
+def get_discovery_niche_summary() -> list[NicheSummaryRow]:
+    """Every niche that has at least one tagged market, most-tagged first -
+    a niche with candidates but zero tagged markets can't happen (promotion
+    only ever reads niche_wallet_stats, which is itself only ever populated
+    for niches walk.py has already tagged), so an outer join isn't needed.
+    """
+    with db_session() as session:
+        market_counts = dict(
+            session.execute(
+                select(DiscoveryMarketNiche.niche, func.count()).group_by(
+                    DiscoveryMarketNiche.niche
+                )
+            ).all()
+        )
+        stage_counts: dict[str, dict[str, int]] = {}
+        for niche, stage, count in session.execute(
+            select(NicheTraderPipeline.niche, NicheTraderPipeline.stage, func.count()).group_by(
+                NicheTraderPipeline.niche, NicheTraderPipeline.stage
+            )
+        ).all():
+            stage_counts.setdefault(niche, {})[stage] = count
+        median_n = dict(
+            session.execute(
+                select(
+                    NicheWalletStat.niche,
+                    func.percentile_cont(0.5).within_group(NicheWalletStat.resolved_n.asc()),
+                ).group_by(NicheWalletStat.niche)
+            ).all()
+        )
+
+    rows = []
+    for niche, tagged in sorted(market_counts.items(), key=lambda item: item[1], reverse=True):
+        stages = stage_counts.get(niche, {})
+        rows.append(
+            NicheSummaryRow(
+                niche=niche,
+                markets_tagged=tagged,
+                candidates=stages.get(NicheTraderPipelineStage.CANDIDATE, 0),
+                watchlist=stages.get(NicheTraderPipelineStage.WATCHLIST, 0),
+                validated=stages.get(NicheTraderPipelineStage.VALIDATED, 0),
+                median_resolved_n=_decimal_or_none(median_n.get(niche)),
+            )
+        )
+    return rows
+
+
+@dataclass(frozen=True)
+class NicheWalletRow:
+    """One (wallet, niche) pair's row for a niche's drill-down list."""
+
+    wallet_id: int
+    address: str
+    username: str | None
+    niche: str
+    stage: str
+    entered_stage_at: datetime
+    resolved_n: int | None
+    wins: int | None
+    wilson_low: Decimal | None
+    roi: Decimal | None
+
+
+_DISCOVERY_NICHE_WALLETS_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class NicheWalletList:
+    rows: list[NicheWalletRow]
+    total: int
+
+
+def get_discovery_niche_wallets(niche: str) -> NicheWalletList:
+    """Every (wallet, niche) pair for one niche, across all stages
+    (CANDIDATE through DECAYING - REJECTED excluded, same "not worth
+    listing" convention the Scout page's funnel already uses), most
+    recently entered first. Capped: a popular niche (Soccer alone had
+    1,100+ CANDIDATE rows within the first day of the sweep running) would
+    otherwise dump an unbounded table into the page - total is returned
+    separately so the page can say "showing 200 of 1,100", not silently
+    truncate.
+    """
+    with db_session() as session:
+        total = session.execute(
+            select(func.count())
+            .select_from(NicheTraderPipeline)
+            .where(
+                NicheTraderPipeline.niche == niche,
+                NicheTraderPipeline.stage != NicheTraderPipelineStage.REJECTED,
+            )
+        ).scalar_one()
+        rows = session.execute(
+            select(NicheTraderPipeline, Wallet.address, Wallet.username)
+            .join(Wallet, Wallet.id == NicheTraderPipeline.wallet_id)
+            .where(
+                NicheTraderPipeline.niche == niche,
+                NicheTraderPipeline.stage != NicheTraderPipelineStage.REJECTED,
+            )
+            .order_by(NicheTraderPipeline.entered_stage_at.desc())
+            .limit(_DISCOVERY_NICHE_WALLETS_LIMIT)
+        ).all()
+        wallet_ids = [pipeline.wallet_id for pipeline, _, _ in rows]
+        stats_by_wallet = {}
+        if wallet_ids:
+            stats_by_wallet = {
+                row.wallet_id: row
+                for row in session.execute(
+                    select(NicheWalletStat).where(
+                        NicheWalletStat.wallet_id.in_(wallet_ids), NicheWalletStat.niche == niche
+                    )
+                ).scalars()
+            }
+
+    result = []
+    for pipeline, address, username in rows:
+        stat = stats_by_wallet.get(pipeline.wallet_id)
+        result.append(
+            NicheWalletRow(
+                wallet_id=pipeline.wallet_id,
+                address=address,
+                username=username,
+                niche=niche,
+                stage=pipeline.stage,
+                entered_stage_at=pipeline.entered_stage_at,
+                resolved_n=stat.resolved_n if stat is not None else None,
+                wins=stat.wins if stat is not None else None,
+                wilson_low=stat.wilson_low if stat is not None else None,
+                roi=stat.roi if stat is not None else None,
+            )
+        )
+    return NicheWalletList(rows=result, total=total)
+
+
+def get_discovery_checkpoints() -> dict[str, DiscoverySweepCheckpoint]:
+    """The two sweep stages' resumable cursors, for the page's "how far has
+    the walk actually gotten" footer - the same honesty-first framing
+    DiscoveryCoverage exists for, at finer grain.
+    """
+    with db_session() as session:
+        rows = session.execute(select(DiscoverySweepCheckpoint)).scalars().all()
+    return {row.stage: row for row in rows}

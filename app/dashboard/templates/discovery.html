@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}Discovery - polybot console{% endblock %}
+
+{% block content %}
+
+<div class="page-head">
+  <div class="page-head__title">Niche Discovery</div>
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Coverage</span></div>
+  <p class="text-dim micro-label" style="margin-bottom: var(--space-3);">
+    Market-walk based, not leaderboard-seeded - walks every resolved market's
+    real trade history (no seed wallet list) and screens each wallet's
+    per-niche record independently of its overall performance. Coverage is
+    the honesty gate: nothing below is a finding until this is high.
+  </p>
+  <div class="count-strip">
+    <div class="count-tile">
+      <div class="micro-label">Resolved markets tagged</div>
+      <div class="count-tile__value">{{ coverage.markets_tagged }} / {{ coverage.resolved_markets_total }}</div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Coverage</div>
+      <div class="count-tile__value {% if coverage.coverage_pct < 25 %}text-amber{% else %}text-phosphor{% endif %}">
+        {{ "%.1f"|format(coverage.coverage_pct) }}%
+      </div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Trades graded</div>
+      <div class="count-tile__value">{{ coverage.trades_graded }}</div>
+    </div>
+    <div class="count-tile">
+      <div class="micro-label">Wallet-niche pairs</div>
+      <div class="count-tile__value">{{ coverage.wallet_niche_pairs }}</div>
+    </div>
+  </div>
+  {% if coverage.coverage_pct < 25 %}
+  <p class="text-amber" style="font-size: 13px; margin-top: var(--space-3);">
+    Coverage is still low - the walk processes a bounded batch of markets per
+    cycle and resumes from a checkpoint, so this number climbs over time.
+    Niche and candidate counts below will shift as coverage grows; treat them
+    as a working-correctly checkpoint, not a result.
+  </p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel__title"><span>Niches</span></div>
+  {% if niche_summary %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Niche</th>
+          <th class="num">Markets tagged</th>
+          <th class="num">Candidates</th>
+          <th class="num">Watchlist</th>
+          <th class="num">Validated</th>
+          <th class="num">Median n</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in niche_summary %}
+        <tr class="clickable-row" data-href="/discovery?niche={{ row.niche }}"
+            style="{% if selected_niche == row.niche %}outline: 2px solid var(--phosphor);{% endif %}">
+          <td><a href="/discovery?niche={{ row.niche }}">{{ row.niche }}</a></td>
+          <td class="num">{{ row.markets_tagged }}</td>
+          <td class="num">{{ row.candidates }}</td>
+          <td class="num">{{ row.watchlist }}</td>
+          <td class="num">{{ row.validated }}</td>
+          <td class="num">{% if row.median_resolved_n is not none %}{{ "%.1f"|format(row.median_resolved_n) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No markets tagged yet - the walk hasn't run a cycle, or hasn't found a niche match yet.</p>
+  {% endif %}
+</div>
+
+{% if selected_niche %}
+<div class="panel">
+  <div class="panel__title">
+    <span>{{ selected_niche }} wallets</span>
+    <span class="text-dim" style="font-weight: 400; font-size: 12px;">
+      promotion gate: n &ge; {{ discovery_min_trades }}, Wilson-low &gt; {{ discovery_min_wilson_winrate }}
+      {% if niche_wallets and niche_wallets.total > niche_wallets.rows|length %}
+      &middot; showing {{ niche_wallets.rows|length }} of {{ niche_wallets.total }}, most recent first
+      {% endif %}
+    </span>
+  </div>
+  {% if niche_wallets and niche_wallets.rows %}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Wallet</th>
+          <th>Stage</th>
+          <th class="num">n</th>
+          <th class="num">Wins</th>
+          <th class="num">Wilson-low</th>
+          <th class="num">ROI</th>
+          <th>Since</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in niche_wallets.rows %}
+        <tr class="clickable-row" data-href="/scout/{{ w.wallet_id }}">
+          <td><a href="/scout/{{ w.wallet_id }}">{{ w.username or (w.address | short_address) }}</a></td>
+          <td>
+            {% if w.stage == 'VALIDATED' %}<span class="tag tag--phosphor">VALIDATED</span>
+            {% elif w.stage == 'WATCHLIST' %}<span class="tag tag--amber">WATCHLIST</span>
+            {% elif w.stage == 'DECAYING' %}<span class="tag tag--alert">DECAYING</span>
+            {% else %}<span class="tag">CANDIDATE</span>{% endif %}
+          </td>
+          <td class="num">{{ w.resolved_n if w.resolved_n is not none else "—" }}</td>
+          <td class="num">{{ w.wins if w.wins is not none else "—" }}</td>
+          <td class="num">{% if w.wilson_low is not none %}{{ "%.4f"|format(w.wilson_low) }}{% else %}<span class="text-dim">—</span>{% endif %}</td>
+          <td class="num {% if w.roi is not none and w.roi > 0 %}text-phosphor{% elif w.roi is not none and w.roi < 0 %}text-alert{% endif %}">
+            {% if w.roi is not none %}{{ "%.2f"|format(w.roi * 100) }}%{% else %}<span class="text-dim">—</span>{% endif %}
+          </td>
+          <td class="text-dim">{{ w.entered_stage_at | relative_time }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">No wallets in this niche yet.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel__title"><span>Read this list carefully</span></div>
+  <p class="text-dim" style="font-size: 13px;">
+    This screen is historical win rate within a niche only - it does not yet
+    run the market-maker/bot-detection heuristics the global Scout pipeline
+    uses (app/optimization/market_maker.py). A wallet with an unusually high
+    resolved_n relative to how little of the market universe has been walked
+    so far is more likely a high-frequency bot or liquidity provider than a
+    genuine specialist - treat a large n here as a flag to check, not a
+    stronger signal. Forward CLV tracking (the same out-of-sample bar the
+    Scout page's copy list requires) is what actually verifies a niche
+    candidate; a bare CANDIDATE row here is unverified, exactly like a
+    CANDIDATE on the Scout page.
+  </p>
+</div>
+
+{% endblock %}
