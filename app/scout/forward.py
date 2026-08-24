@@ -241,7 +241,7 @@ def _record_new_forward_trades(session: Session, now: datetime) -> int:
         return 0
 
     wallet_ids = [row.wallet_id for row in tracked]
-    since_by_wallet = {row.wallet_id: _candidate_since(row) for row in tracked}
+    since_by_wallet = {row.wallet_id: candidate_since(row) for row in tracked}
 
     already_tracked_ids = set(
         session.execute(
@@ -362,18 +362,23 @@ def _fill_forward_clv(session: Session, config: ForwardConfig, now: datetime) ->
     return horizon_filled, resolution_filled
 
 
-def _candidate_since(pipeline_row: TraderPipeline) -> datetime | None:
+def candidate_since(pipeline_row: TraderPipeline) -> datetime | None:
     raw = (pipeline_row.metrics or {}).get("candidate_since")
     return datetime.fromisoformat(raw) if raw else None
 
 
-def _current_window_start(
+def current_window_start(
     session: Session, wallet_id: int, pipeline_row: TraderPipeline
 ) -> datetime | None:
     """The open window's start: right where the last completed window
     ended, or (for a wallet's very first window) its candidate_since
     anchor - never entered_stage_at directly, since that gets bumped on
     every promotion and would silently truncate window 2+.
+
+    Public (not module-private): the dashboard's Scout page reuses this
+    exact function to show a CANDIDATE wallet's real in-progress window
+    state (days elapsed, forward trades so far) instead of a bare "not
+    tracked yet" - see app/dashboard/queries.py's get_scout_wallets_by_stage.
     """
     last_window_end = session.execute(
         select(ScoutValidationWindow.window_ended_at)
@@ -383,7 +388,7 @@ def _current_window_start(
     ).scalar_one_or_none()
     if last_window_end is not None:
         return last_window_end
-    return _candidate_since(pipeline_row)
+    return candidate_since(pipeline_row)
 
 
 def close_ready_windows(
@@ -402,7 +407,7 @@ def close_ready_windows(
     """
     closed: list[ScoutValidationWindow] = []
     for wallet_id, pipeline_row in pipeline_by_wallet.items():
-        window_start = _current_window_start(session, wallet_id, pipeline_row)
+        window_start = current_window_start(session, wallet_id, pipeline_row)
         if window_start is None:
             continue
 

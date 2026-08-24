@@ -69,6 +69,7 @@ from app.optimization.clv import (
     aggregate_clv_trend,
 )
 from app.optimization.crowdedness import hidden_alpha_score
+from app.optimization.event_clustering import cluster_key_for, effective_sample_size
 from app.optimization.market_maker import latest_market_maker_scores
 from app.paper.engine import resolve_calibration_config, resolve_risk_config
 from app.paper.metrics import (
@@ -81,6 +82,7 @@ from app.paper.metrics import (
 )
 from app.risk.calibration import compute_bucket_stats, load_resolved_trade_records
 from app.risk.rules import RiskRule
+from app.scout.forward import ForwardConfig, current_window_start
 from app.utils.system_audit import CheckResult, run_checks
 
 logger = logging.getLogger(__name__)
@@ -2128,12 +2130,67 @@ class ScoutPipelineRow:
     confirmations: int
     decay_streak: int | None
     failing_gates: list[str]
+    # Only populated when last_window_avg_clv is None (no window has closed
+    # yet) - the real in-progress state of the wallet's currently-open
+    # window, so the page can show "12/14 days, n=310 (effective 6/40)"
+    # instead of a bare "not tracked yet" that reads as "nothing is
+    # happening" when forward trades are in fact accumulating normally.
+    # See docs on window_ready_to_close's two independent gates.
+    window_days_elapsed: float | None = None
+    window_validation_days: int | None = None
+    window_forward_n: int | None = None
+    window_effective_n: int | None = None
+    window_min_forward_trades: int | None = None
+
+
+def _scout_window_progress(
+    session: Session, wallet_id: int, pipeline: TraderPipeline, now: datetime, config: ForwardConfig
+) -> dict[str, float | int | None]:
+    """The wallet's currently-open window's real progress toward closing -
+    same query close_ready_windows() uses to decide readiness (app/scout/
+    forward.py), reused here read-only so the dashboard's numbers can never
+    drift from what actually gates a window. None values mean "no window
+    has ever started" (shouldn't happen for a CANDIDATE/WATCHLIST wallet,
+    but the page must not crash if it somehow does).
+    """
+    window_start = current_window_start(session, wallet_id, pipeline)
+    if window_start is None:
+        return {
+            "days_elapsed": None,
+            "validation_days": config.validation_days,
+            "forward_n": None,
+            "effective_n": None,
+            "min_forward_trades": config.min_forward_trades,
+        }
+
+    rows = session.execute(
+        select(ScoutForwardTrade.condition_id, Market.event_cluster_id)
+        .outerjoin(Market, Market.condition_id == ScoutForwardTrade.condition_id)
+        .where(
+            ScoutForwardTrade.wallet_id == wallet_id,
+            ScoutForwardTrade.entry_at >= window_start,
+            ScoutForwardTrade.entry_at < now,
+            ScoutForwardTrade.clv_horizon.is_not(None),
+        )
+    ).all()
+    effective_n = effective_sample_size(
+        [cluster_key_for(condition_id, event_cluster_id) for condition_id, event_cluster_id in rows]
+    )
+    return {
+        "days_elapsed": (now - window_start).total_seconds() / 86400,
+        "validation_days": config.validation_days,
+        "forward_n": len(rows),
+        "effective_n": effective_n,
+        "min_forward_trades": config.min_forward_trades,
+    }
 
 
 def get_scout_wallets_by_stage(stage: str) -> list[ScoutPipelineRow]:
     """Every wallet currently at one pipeline stage, most recently moved
     first - the funnel's drill-down when a stage column is clicked.
     """
+    config = ForwardConfig.from_settings(get_settings())
+    now = datetime.now(UTC)
     with db_session() as session:
         rows = session.execute(
             select(TraderPipeline, Wallet.address, Wallet.username)
@@ -2144,9 +2201,18 @@ def get_scout_wallets_by_stage(stage: str) -> list[ScoutPipelineRow]:
         wallet_ids = [pipeline.wallet_id for pipeline, _, _ in rows]
         confirmations_by_wallet = _confirmations_by_wallet(session, wallet_ids)
 
+        progress_by_wallet: dict[int, dict[str, float | int | None]] = {}
+        for pipeline, _, _ in rows:
+            metrics = pipeline.metrics or {}
+            if metrics.get("last_window_avg_clv") is None:
+                progress_by_wallet[pipeline.wallet_id] = _scout_window_progress(
+                    session, pipeline.wallet_id, pipeline, now, config
+                )
+
     result = []
     for pipeline, address, username in rows:
         metrics = pipeline.metrics or {}
+        progress = progress_by_wallet.get(pipeline.wallet_id, {})
         result.append(
             ScoutPipelineRow(
                 wallet_id=pipeline.wallet_id,
@@ -2161,6 +2227,11 @@ def get_scout_wallets_by_stage(stage: str) -> list[ScoutPipelineRow]:
                 confirmations=confirmations_by_wallet.get(pipeline.wallet_id, 0),
                 decay_streak=metrics.get("decay_streak"),
                 failing_gates=metrics.get("failing_gates", []),
+                window_days_elapsed=progress.get("days_elapsed"),
+                window_validation_days=progress.get("validation_days"),
+                window_forward_n=progress.get("forward_n"),
+                window_effective_n=progress.get("effective_n"),
+                window_min_forward_trades=progress.get("min_forward_trades"),
             )
         )
     return result

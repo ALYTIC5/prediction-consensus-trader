@@ -57,7 +57,13 @@
             {% if w.wilson_low is not none %}{{ "%.4f"|format(w.wilson_low) }} (n={{ w.wilson_n }}){% else %}<span class="text-dim">—</span>{% endif %}
           </td>
           <td class="num {% if w.last_window_avg_clv is not none and w.last_window_avg_clv > 0 %}text-phosphor{% elif w.last_window_avg_clv is not none and w.last_window_avg_clv < 0 %}text-alert{% endif %}">
-            {% if w.last_window_avg_clv is not none %}{{ "%.4f"|format(w.last_window_avg_clv) }} (n={{ w.last_window_n }}){% else %}<span class="text-dim">not tracked yet</span>{% endif %}
+            {% if w.last_window_avg_clv is not none %}
+            {{ "%.4f"|format(w.last_window_avg_clv) }} (n={{ w.last_window_n }})
+            {% elif w.window_days_elapsed is not none %}
+            <span class="text-dim" title="window still open: needs both {{ w.window_validation_days }} days elapsed AND {{ w.window_min_forward_trades }} effective forward trades before it closes">
+              {{ "%.1f"|format(w.window_days_elapsed) }}/{{ w.window_validation_days }}d, n={{ w.window_forward_n }} (eff. {{ w.window_effective_n }}/{{ w.window_min_forward_trades }})
+            </span>
+            {% else %}<span class="text-dim">not tracked yet</span>{% endif %}
           </td>
           <td class="num">
             {% if selected_stage in ("WATCHLIST", "VALIDATED") %}
