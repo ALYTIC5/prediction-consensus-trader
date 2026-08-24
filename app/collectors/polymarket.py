@@ -151,9 +151,22 @@ class PolymarketClient:
         (verified live 2026-08-19, see docs/API_REFERENCE.md and
         GammaMarketResolution's docstring). None means Gamma has never
         heard of this id (404) - never raised as an error.
+
+        include_tag=true (verified live 2026-08-24 against a resolved,
+        closed market - GET /markets/{id}?include_tag=true correctly
+        returns its full tags array, e.g. bitcoin/crypto/crypto-prices for
+        a resolved "Bitcoin Up or Down" market) - added so
+        app/discovery/walk.py can niche-classify resolved markets without
+        hitting the exact same silent-drop bug this method already exists
+        to work around for resolutions.py. Harmless for the resolution-
+        status use case: GammaMarketResolution inherits tags from
+        GammaMarket but never reads it.
         """
         try:
-            data = await self._http.get_json(f"{self._settings.gamma_api_base}/markets/{gamma_id}")
+            data = await self._http.get_json(
+                f"{self._settings.gamma_api_base}/markets/{gamma_id}",
+                params={"include_tag": "true"},
+            )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None

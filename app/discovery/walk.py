@@ -5,10 +5,20 @@ authoritative, app/collectors/resolutions.py) into a niche.
 Deliberately walks the LOCAL markets/market_resolutions tables, not Gamma's
 market listing - the resolutions backfill already gave this project a
 complete local inventory of resolved markets (60,028+ as of 2026-08-24), so
-re-enumerating them from Gamma would be pure waste. The only new API calls
-this stage makes are the tag lookups (get_markets_by_condition_ids,
-include_tag=true - the exact same call app/collectors/markets.py already
-makes and discards tags from).
+re-enumerating them from Gamma would be pure waste.
+
+Tag lookups go through get_market_by_id (path-based single-market lookup,
+per gamma_id), one call per market, NOT get_markets_by_condition_ids
+(bulk, condition_ids-filtered) - verified live 2026-08-24 that the bulk
+route returns an EMPTY result for a resolved market's condition_id every
+time (confirmed against a real resolved "Bitcoin Up or Down" market: zero
+rows back), the exact same silent-drop behavior app/collectors/
+resolutions.py's own docstring already documents and was built to work
+around. Since this stage walks ONLY resolved markets by definition (joined
+against market_resolutions), the bulk route would silently return nothing
+for the entire population - not a partial gap, a total one. Caught live in
+production after this bug shipped: the first two sweep cycles classified
+0/400 markets before this fix.
 
 Checkpointed by condition_id ordering (DiscoverySweepCheckpoint,
 stage="niche_tagging"), not by "already in discovery_market_niches" - a
@@ -16,6 +26,7 @@ market that gets no niche match still needs to count as processed, or the
 walk would re-fetch its tags every single cycle forever.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +36,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.collectors.polymarket import PolymarketClient
-from app.collectors.schemas import GammaMarket
+from app.collectors.schemas import GammaMarketResolution
 from app.config.settings import Settings
 from app.db.models import DiscoveryMarketNiche, DiscoverySweepCheckpoint, Market, MarketResolution
 from app.db.session import db_session
@@ -48,27 +59,30 @@ def _load_checkpoint(session: Session) -> str | None:
     return row.last_condition_id if row is not None else None
 
 
-def _load_next_batch(session: Session, after: str | None, limit: int) -> list[str]:
-    """Every resolved market's condition_id past the checkpoint cursor,
-    ascending - the same resolved-market population V0.1's resolution
-    pipeline already populates market_resolutions for.
+def _load_next_batch(session: Session, after: str | None, limit: int) -> list[tuple[str, str]]:
+    """(condition_id, gamma_id) for every resolved market past the
+    checkpoint cursor, ascending by condition_id - the same resolved-market
+    population V0.1's resolution pipeline already populates
+    market_resolutions for. gamma_id is needed for the per-market
+    get_market_by_id lookup (see module docstring on why the bulk
+    condition_ids route can't be used here).
     """
     stmt = (
-        select(Market.condition_id)
+        select(Market.condition_id, Market.gamma_id)
         .join(MarketResolution, MarketResolution.condition_id == Market.condition_id)
         .order_by(Market.condition_id.asc())
         .limit(limit)
     )
     if after is not None:
         stmt = stmt.where(Market.condition_id > after)
-    return list(session.execute(stmt).scalars().all())
+    return list(session.execute(stmt).all())
 
 
-def _non_hidden_slugs(market: GammaMarket) -> list[str]:
+def _non_hidden_slugs(market: GammaMarketResolution) -> list[str]:
     return [tag.slug for tag in market.tags if not tag.force_hide and tag.slug is not None]
 
 
-def _upsert_niche(session: Session, market: GammaMarket, now: datetime) -> bool:
+def _upsert_niche(session: Session, market: GammaMarketResolution, now: datetime) -> bool:
     slugs = _non_hidden_slugs(market)
     generic_sports = "sports" in slugs or "esports" in slugs
     match = classify_market_niche(slugs, market.question, generic_sports)
@@ -122,18 +136,18 @@ async def run_niche_tagging_walk(client: PolymarketClient, settings: Settings) -
     now = datetime.now(UTC)
     with db_session() as session:
         after = _load_checkpoint(session)
-        condition_ids = _load_next_batch(session, after, settings.discovery_walk_batch_size)
+        batch = _load_next_batch(session, after, settings.discovery_walk_batch_size)
 
-    if not condition_ids:
+    if not batch:
         return WalkSummary(fetched=0, classified=0, checkpoint_advanced_to=after)
 
-    markets = await client.get_markets_by_condition_ids(condition_ids)
-    markets_by_condition_id = {m.condition_id: m for m in markets}
+    condition_ids = [row[0] for row in batch]
+    gamma_ids = [row[1] for row in batch]
+    markets = await asyncio.gather(*(client.get_market_by_id(gid) for gid in gamma_ids))
 
     classified = 0
     with db_session() as session:
-        for condition_id in condition_ids:
-            market = markets_by_condition_id.get(condition_id)
+        for market in markets:
             if market is not None and _upsert_niche(session, market, now):
                 classified += 1
         last_id = condition_ids[-1]
