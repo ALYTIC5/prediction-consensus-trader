@@ -625,6 +625,16 @@ class Settings(BaseSettings):
     # never reach 50 total trades in that niche for years.
     discovery_min_trades: int = 15
     discovery_min_wilson_winrate: Decimal = Decimal("0.52")
+    # Hard cap on how many wallets can be niche_tracked (and therefore
+    # polled by app/collectors/positions.py) at once - same clear-then-
+    # set-top-N pattern app/consensus/scorer.py already uses for is_tracked
+    # (see promotion.py). NOT optional: the shared http_max_concurrency
+    # semaphore (default 6) is global across every job in the process, and
+    # an uncapped niche_tracked set (observed live: 2,697 wallets after
+    # ~7 hours of the sweep running) monopolized it badly enough to starve
+    # the markets and coherence jobs into an apparent hang for over 2 hours
+    # - caught live in production, not simulated.
+    discovery_max_niche_tracked_wallets: int = 150
     # Same forward-tracking shape as Stage 2 (app/scout/forward.py's
     # ForwardConfig), reused field-for-field via app/discovery/forward.py's
     # own config - kept as separate settings (not literally shared fields)
