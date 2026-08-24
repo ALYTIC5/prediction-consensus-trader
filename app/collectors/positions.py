@@ -36,9 +36,18 @@ async def collect(client: PolymarketClient, settings: Settings) -> None:
 
 
 def _get_tracked_wallets() -> list[tuple[int, str]]:
+    """is_tracked (top-scored, global leaderboard-seeded) OR niche_tracked
+    (app/discovery/promotion.py: earned a niche-CANDIDATE spot, regardless
+    of overall score) - two independent reasons a wallet's positions need
+    polling, unioned here so niche forward-tracking gets real
+    PositionHistory rows without touching any other is_tracked-gated
+    module's filter.
+    """
     with db_session() as session:
         rows = session.execute(
-            select(Wallet.id, Wallet.address).where(Wallet.is_tracked.is_(True))
+            select(Wallet.id, Wallet.address).where(
+                Wallet.is_tracked.is_(True) | Wallet.niche_tracked.is_(True)
+            )
         ).all()
     return [(row.id, row.address) for row in rows]
 

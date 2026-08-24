@@ -14,6 +14,7 @@ from app.collectors.schemas import (
     LeaderboardEntry,
     OrderBookResponse,
     PositionEntry,
+    TradeEntry,
 )
 from app.config.settings import get_settings
 
@@ -28,6 +29,8 @@ class PolymarketClient:
     _POSITIONS_PAGE_SIZE = 500
     _POSITIONS_MAX_OFFSET = 10000
     _MARKETS_CHUNK_SIZE = 20
+    _TRADES_PAGE_SIZE = 1000
+    _TRADES_MAX_OFFSET = 100000
 
     def __init__(self, http: PolymarketHTTP | None = None) -> None:
         self._http = http or PolymarketHTTP()
@@ -156,6 +159,34 @@ class PolymarketClient:
                 return None
             raise
         return GammaMarketResolution.model_validate(data)
+
+    async def get_trades_for_market(self, condition_id: str) -> list[TradeEntry]:
+        """Page /trades (Data API) 1000 at a time for one market - every
+        trade ever executed on it, not just current positions. This is the
+        market-walk's wallet-discovery source (app/discovery/trades.py):
+        unlike get_positions, it needs no seed wallet list at all - it
+        surfaces every distinct trader who ever touched this market,
+        directly from the market side. Verified live 2026-08-24 (see
+        TradeEntry's docstring); limit/offset/market params documented in
+        docs/API_REFERENCE.md.
+        """
+        results: list[TradeEntry] = []
+        offset = 0
+        while offset <= self._TRADES_MAX_OFFSET:
+            data = await self._http.get_json(
+                f"{self._settings.data_api_base}/trades",
+                params={
+                    "market": condition_id,
+                    "limit": self._TRADES_PAGE_SIZE,
+                    "offset": offset,
+                },
+            )
+            page = [TradeEntry.model_validate(row) for row in data]
+            results.extend(page)
+            if len(page) < self._TRADES_PAGE_SIZE:
+                break
+            offset += self._TRADES_PAGE_SIZE
+        return results
 
     async def get_markets_by_condition_ids(self, condition_ids: Sequence[str]) -> list[GammaMarket]:
         """Fetch markets by condition ID, 20 per request, as repeated query params."""

@@ -15,6 +15,7 @@ from app.collectors.positions import collect as collect_positions
 from app.collectors.resolutions import collect as collect_resolutions
 from app.config.settings import get_settings
 from app.consensus_v2.scan import run_consensus_v2_scan
+from app.discovery.sweep import run_discovery_sweep
 from app.optimization.bandit import run_bandit_job
 from app.optimization.clustering import run_clustering_job
 from app.optimization.clv import run_clv_job
@@ -141,6 +142,11 @@ async def _run() -> None:
                 name="pruner",
                 run=run_pruner_job,
                 interval_seconds=86400,
+            ),
+            PeriodicJob(
+                name="discovery",
+                run=lambda: run_discovery_sweep(client, settings),
+                interval_seconds=settings.discovery_sweep_interval_seconds,
             ),
         ]
         await run_jobs(jobs, stop_event, service="collectors")

@@ -608,6 +608,34 @@ class Settings(BaseSettings):
     # wallet_crowdedness (Phase 6 workstream 7) directly.
     scout_crowd_penalty_weight: Decimal = Decimal("0.3")
 
+    # Niche-aware discovery (app/discovery/*.py) - market-walk based, runs
+    # alongside the Scout's leaderboard-seeded pipeline, never replacing it.
+    # Bounded per cycle for the same durability reason every other backfill
+    # in this project caps its per-cycle work (resolutions, CLV horizon-fill,
+    # markets collector backlog): a multi-thousand-market walk must survive
+    # being killed and resumed mid-sweep, not run as one unbounded pass.
+    discovery_walk_batch_size: int = 200
+    discovery_sweep_interval_seconds: int = 300
+    # Per-niche promotion gate - deliberately separate fields from the
+    # global scout_min_total_trades/scout_min_wilson_winrate: a niche
+    # specialist is judged on a smaller, category-scoped sample, so a
+    # lower minimum n than the 50-trade global bar is intentional, not an
+    # oversight - a wallet with 20 resolved MMA picks and a Wilson-low
+    # clearing 0.52 is real evidence within that niche even if it would
+    # never reach 50 total trades in that niche for years.
+    discovery_min_trades: int = 15
+    discovery_min_wilson_winrate: Decimal = Decimal("0.52")
+    # Same forward-tracking shape as Stage 2 (app/scout/forward.py's
+    # ForwardConfig), reused field-for-field via app/discovery/forward.py's
+    # own config - kept as separate settings (not literally shared fields)
+    # so niche-scoped validation can be tuned independently of the global
+    # Scout pipeline later without touching scout_* at all.
+    discovery_clv_horizon_hours: int = 24
+    discovery_validation_days: int = 14
+    discovery_min_forward_trades: int = 20
+    discovery_validation_confirmations: int = 2
+    discovery_clv_fill_max_per_cycle: int = 2000
+
     @model_validator(mode="after")
     def _validate_paper_fractions(self) -> "Settings":
         """Fields that are a fraction/percentage of a [0, 1]-bounded price
@@ -651,6 +679,7 @@ class Settings(BaseSettings):
             "scout_min_wilson_winrate",
             "scout_min_profitable_week_fraction",
             "scout_crowd_penalty_weight",
+            "discovery_min_wilson_winrate",
         )
         for name in fields:
             value = getattr(self, name)

@@ -53,6 +53,35 @@ class LeaderboardEntry(PolymarketResponseModel):
         return value.lower()
 
 
+class TradeEntry(PolymarketResponseModel):
+    """One row from GET /trades (Data API) - verified live 2026-08-24
+    against a real resolved market (condition_id
+    0xa5b5a2d...c1c3ba0, a UFC fight): proxyWallet, side, asset,
+    conditionId, size, price, timestamp (epoch seconds), title, slug,
+    eventSlug, outcome, outcomeIndex, name, pseudonym, transactionHash all
+    present on the wire, exactly as documented in docs/API_REFERENCE.md's
+    /trades entry. No resolved/won field - win/loss is derived downstream
+    by comparing outcome_index against MarketResolution.winning_outcome_index.
+    """
+
+    proxy_wallet: str = Field(alias="proxyWallet")
+    side: str
+    asset: str
+    condition_id: str = Field(alias="conditionId")
+    size: Decimal
+    price: Decimal
+    timestamp: int
+    outcome_index: int = Field(alias="outcomeIndex")
+    transaction_hash: str = Field(alias="transactionHash")
+    name: str | None = None
+    pseudonym: str | None = None
+
+    @field_validator("proxy_wallet", "condition_id", "asset", mode="after")
+    @classmethod
+    def _lowercase_hex(cls, value: str) -> str:
+        return value.lower()
+
+
 class PositionEntry(PolymarketResponseModel):
     """One row from GET /positions."""
 

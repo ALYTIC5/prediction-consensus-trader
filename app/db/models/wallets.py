@@ -29,6 +29,15 @@ class Wallet(Base):
     # Only tracked wallets get polled for positions - most wallets we see on
     # a leaderboard page are recorded for reference only, never followed.
     is_tracked: Mapped[bool] = mapped_column(Boolean, index=True, default=False)
+    # Separate from is_tracked on purpose: a niche specialist
+    # (app/discovery/promotion.py) can be mediocre overall and never earn a
+    # spot in the top-tracked_wallets_limit global ranking that drives
+    # is_tracked, but still needs its positions polled once it clears a
+    # per-niche bar. Every other is_tracked-gated module (crowdedness,
+    # market_maker, clustering, cotrading, consensus scoring) keeps
+    # filtering on is_tracked alone, unaffected - only
+    # app/collectors/positions.py's tracked-wallet query reads this too.
+    niche_tracked: Mapped[bool] = mapped_column(Boolean, index=True, default=False)
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
