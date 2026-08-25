@@ -132,6 +132,13 @@ async def run_niche_tagging_walk(client: PolymarketClient, settings: Settings) -
     call, same "cap it, let a scheduled job drain the backlog over several
     cycles" shape the resolutions backfill and the CLV horizon-fill both
     already use for the identical durability reason.
+
+    return_exceptions=True on the gather, deliberately - a bare gather()
+    lets one market's failure kill the whole batch and fail the entire
+    discovery cycle (observed live: app/discovery/trades.py's identical
+    pattern did exactly this on every cycle from 2026-08-25 07:46 onward).
+    A failed lookup is logged and treated as "no market" (same as a
+    genuine 404), never guessed - the checkpoint still advances past it.
     """
     now = datetime.now(UTC)
     with db_session() as session:
@@ -143,7 +150,16 @@ async def run_niche_tagging_walk(client: PolymarketClient, settings: Settings) -
 
     condition_ids = [row[0] for row in batch]
     gamma_ids = [row[1] for row in batch]
-    markets = await asyncio.gather(*(client.get_market_by_id(gid) for gid in gamma_ids))
+    raw_results = await asyncio.gather(
+        *(client.get_market_by_id(gid) for gid in gamma_ids), return_exceptions=True
+    )
+    markets: list[GammaMarketResolution | None] = []
+    for gamma_id, result in zip(gamma_ids, raw_results, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning("discovery: niche_tagging failed for gamma_id=%s: %s", gamma_id, result)
+            markets.append(None)
+        else:
+            markets.append(result)
 
     classified = 0
     with db_session() as session:

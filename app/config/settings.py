@@ -614,7 +614,14 @@ class Settings(BaseSettings):
     # in this project caps its per-cycle work (resolutions, CLV horizon-fill,
     # markets collector backlog): a multi-thousand-market walk must survive
     # being killed and resumed mid-sweep, not run as one unbounded pass.
-    discovery_walk_batch_size: int = 200
+    # 200 (the original default) fires 200 concurrent requests per cycle
+    # against http_max_concurrency's single global semaphore (default 6,
+    # shared by every job in the process) - live in production this
+    # generated sustained 429 storms on Data API /trades and starved other
+    # collectors of semaphore access for hours. 25 keeps each cycle's burst
+    # in the same order of magnitude the system already ran stably at
+    # (the pre-discovery is_tracked positions sweep: 50 wallets/cycle).
+    discovery_walk_batch_size: int = 25
     discovery_sweep_interval_seconds: int = 300
     # Per-niche promotion gate - deliberately separate fields from the
     # global scout_min_total_trades/scout_min_wilson_winrate: a niche

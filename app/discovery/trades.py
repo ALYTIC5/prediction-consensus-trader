@@ -161,7 +161,15 @@ async def run_trade_grading_walk(client: PolymarketClient, settings: Settings) -
     resolved markets: fetch every trade, upsert the wallet, grade the
     trade, advance the checkpoint. Trade fetches for the batch run
     concurrently (same asyncio.gather shape app/collectors/positions.py
-    already uses for its own per-cycle wallet sweep).
+    already uses for its own per-cycle wallet sweep) - with
+    return_exceptions=True, deliberately: a plain gather() lets ONE
+    market's failure (a real 400 from Data API on a market it rejects,
+    observed live in production) kill the entire batch and fail the whole
+    discovery cycle, which is exactly what happened - discovery failed on
+    every single cycle from 2026-08-25 07:46 onward until this fix. A
+    failed market is logged and skipped (checkpoint still advances past
+    it, same "processed, not guessed" treatment app/discovery/walk.py
+    already applies to a market Gamma has never heard of).
     """
     now = datetime.now(UTC)
     with db_session() as session:
@@ -174,9 +182,18 @@ async def run_trade_grading_walk(client: PolymarketClient, settings: Settings) -
         )
 
     condition_ids = [row[0] for row in batch]
-    trade_lists = await asyncio.gather(
-        *(client.get_trades_for_market(cid) for cid in condition_ids)
+    raw_results = await asyncio.gather(
+        *(client.get_trades_for_market(cid) for cid in condition_ids), return_exceptions=True
     )
+    trade_lists: list[list[TradeEntry]] = []
+    for condition_id, result in zip(condition_ids, raw_results, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "discovery: trade_grading failed for condition_id=%s: %s", condition_id, result
+            )
+            trade_lists.append([])
+        else:
+            trade_lists.append(result)
 
     graded = 0
     wallets_touched: set[str] = set()
